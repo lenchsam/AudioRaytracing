@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEngine;
 
 public class AudioRaytracer : MonoBehaviour
@@ -8,13 +9,10 @@ public class AudioRaytracer : MonoBehaviour
 
     void Update()
     {
-        //this is just used for testing, the real implementation would be triggered elsewhere
-        for (int i = 0; i < rayCount; i++)
-        {
-            //fire rays in a circle around the source
-            float angle = i * (Mathf.PI * 2) / rayCount;
-            Vector3 dir = new Vector3(Mathf.Cos(angle), 0, Mathf.Sin(angle));
+        List<Vector3> directions = FibonacciSphere.GenerateDirections(rayCount);
 
+        foreach (Vector3 dir in directions)
+        {
             AudioRay ray = new AudioRay(transform.position, dir, 1.0f);
             TraceRay(ray);
         }
@@ -27,7 +25,7 @@ public class AudioRaytracer : MonoBehaviour
 
         for (int b = 0; b < maxBounces; b++)
         {
-            if (Physics.Raycast(currentPos, currentDir, out RaycastHit hit, 50f))
+            if (Physics.Raycast(currentPos, currentDir, out RaycastHit hit, 100f))
             {
                 //record the hit point
                 ray.PathPoints.Add(hit.point);
