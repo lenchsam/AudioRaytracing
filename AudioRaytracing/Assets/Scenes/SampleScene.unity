@@ -1492,10 +1492,8 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   _rayCount: 32
   _maxBounces: 3
-  _absorption: 0.2
-  _distanceFalloff: 0.01
-  _listener: {fileID: 527004077}
-  _listenerRadius: 1
+  _checkInterval: 0.1
+  audioSource: {fileID: 527004077}
 --- !u!1 &2095770571
 GameObject:
   m_ObjectHideFlags: 0

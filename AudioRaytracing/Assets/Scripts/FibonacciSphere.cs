@@ -3,11 +3,10 @@ using UnityEngine;
 
 public static class FibonacciSphere
 {
-    public static List<Vector3> GenerateDirections(int numRays)
+    public static Vector3[] GenerateDirections(int numRays)
     {
         //this uses the fibonacci sphere algorithm to generate evenly distributed points on a sphere
-        List<Vector3> directions = new List<Vector3>(numRays);
-
+        Vector3[] directions = new Vector3[numRays];
         float goldenAngle = Mathf.PI * (3f - Mathf.Sqrt(5f));
 
         for (int i = 0; i < numRays; i++)
@@ -25,7 +24,7 @@ public static class FibonacciSphere
             float x = Mathf.Cos(theta) * radius;
             float z = Mathf.Sin(theta) * radius;
 
-            directions.Add(new Vector3(x, y, z)); // already unit length
+            directions[i] = new Vector3(x, y, z); // already unit length
         }
 
         return directions;
