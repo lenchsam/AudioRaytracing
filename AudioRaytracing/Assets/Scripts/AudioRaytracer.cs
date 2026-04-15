@@ -1,12 +1,15 @@
 using Unity.Collections;
 using Unity.Jobs;
-using Unity.VisualScripting;
 using UnityEngine;
 
 public class AudioRaytracer : MonoBehaviour
 {
+    const float SPEED_OF_SOUND = 343f; //meters per second
+
     [SerializeField] private int _rayCount = 32;
     [SerializeField] private int _maxBounces = 3;
+
+    [SerializeField] private float _receiverSensitivity = 15f;
 
     [SerializeField]  private float _checkInterval = 0.1f; //in seconds
     private float _timeSinceLastCheck = 0f;
@@ -21,7 +24,7 @@ public class AudioRaytracer : MonoBehaviour
 
     private Vector3[] _baseDirections;
 
-    [SerializeField] private Transform audioSource;
+    [SerializeField] private Transform _audioSource;
 
     void Start()
     {
@@ -51,16 +54,24 @@ public class AudioRaytracer : MonoBehaviour
         NativeArray<bool> rayAlive = new NativeArray<bool>(_rayCount, Allocator.Temp);
 
         //initialize rays for first bounce
+        NativeArray<float> totalDistances = new NativeArray<float>(_rayCount, Allocator.Temp);
+        NativeArray<float> rayEnergies = new NativeArray<float>(_rayCount, Allocator.Temp);
+
         for (int i = 0; i < _rayCount; i++)
         {
             currentOrigins[i] = transform.position;
             currentDirections[i] = _baseDirections[i];
             rayAlive[i] = true;
+            totalDistances[i] = 0f;
+            rayEnergies[i] = 1.0f;
         }
+
+        float totalVolume = 0f;
 
         for (int bounce = 0; bounce < _maxBounces; bounce++)
         {
             //schedule raycast batches for all alive rays
+            // schedule raycast batches for all alive rays
             for (int i = 0; i < _rayCount; i++)
             {
                 if (rayAlive[i])
@@ -88,6 +99,9 @@ public class AudioRaytracer : MonoBehaviour
                     Vector3 hitPoint = _results[i].point;
                     Vector3 normal = _results[i].normal;
 
+                    totalDistances[i] += _results[i].distance;
+                    rayEnergies[i] *= 0.8f;
+
                     Debug.DrawLine(currentOrigins[i], hitPoint, Color.green, _checkInterval);
 
                     //reflection for next bounce
@@ -98,17 +112,17 @@ public class AudioRaytracer : MonoBehaviour
                     currentOrigins[i] = hitPoint + normal * 0.01f;
                     currentDirections[i] = reflectDir;
 
-                    //prep shadow ray
-                    Vector3 dirToSource = (audioSource.position - hitPoint).normalized;
-                    float distToSource = Vector3.Distance(hitPoint, audioSource.position);
-                    _shadowCommands[i] = new RaycastCommand(hitPoint + normal * 0.01f, dirToSource, distToSource);
+                    Vector3 dirToSource = (_audioSource.position - hitPoint).normalized;
+
+                    float distToSource = Vector3.Distance(hitPoint, _audioSource.position) - 0.1f;
+                    _shadowCommands[i] = new RaycastCommand(hitPoint + normal * 0.01f, dirToSource, Mathf.Max(0f, distToSource));
                 }
                 else
                 {
                     //ray escaped
                     Debug.DrawRay(currentOrigins[i], currentDirections[i] * 100f, Color.red, _checkInterval);
                     rayAlive[i] = false;
-                    _shadowCommands[i] = new RaycastCommand(Vector3.zero, Vector3.up, 0f); //if a ray is dead fill with blank raycast
+                    _shadowCommands[i] = new RaycastCommand(Vector3.zero, Vector3.up, 0f);
                 }
             }
 
@@ -121,22 +135,35 @@ public class AudioRaytracer : MonoBehaviour
             {
                 if (!rayAlive[i]) continue;
 
-                if(!_shadowResults[i].collider.CompareTag("AudioSource")) continue;
+                bool pathIsClear = _shadowResults[i].collider == null || _shadowResults[i].collider.CompareTag("AudioSource");
 
-                if (_shadowCommands[i].distance > 0f)
+                if (pathIsClear)
                 {
-                    //found a valid reflection to the audio source
+                    float finalDistance = totalDistances[i] + Vector3.Distance(currentOrigins[i], _audioSource.position);
 
-                    //TODO: calculate delay, distance attenuation, and wall absorption here
-                    Debug.DrawLine(currentOrigins[i], audioSource.position, Color.yellow, _checkInterval);
+                    float delay = finalDistance / SPEED_OF_SOUND;
+
+                    float distanceAttenuation = 1.0f / Mathf.Max(1.0f, finalDistance);
+                    float finalVolume = rayEnergies[i] * distanceAttenuation;
+
+                    totalVolume += finalVolume;
+
+                    Debug.DrawLine(currentOrigins[i], _audioSource.position, Color.yellow, _checkInterval);
                 }
             }
         }
 
         //clean up temp arrays
+        if (_audioSource.TryGetComponent<AudioSource>(out var audioComponent))
+        {
+            audioComponent.volume = Mathf.Clamp01((totalVolume / _rayCount) * _receiverSensitivity);
+        }
+
         currentOrigins.Dispose();
         currentDirections.Dispose();
         rayAlive.Dispose();
+        totalDistances.Dispose();
+        rayEnergies.Dispose();
     }
 
     void OnDestroy()
