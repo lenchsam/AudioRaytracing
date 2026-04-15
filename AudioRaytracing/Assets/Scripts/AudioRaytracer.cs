@@ -1,5 +1,6 @@
 using Unity.Collections;
 using Unity.Jobs;
+using Unity.VisualScripting;
 using UnityEngine;
 
 public class AudioRaytracer : MonoBehaviour
@@ -120,7 +121,9 @@ public class AudioRaytracer : MonoBehaviour
             {
                 if (!rayAlive[i]) continue;
 
-                if (_shadowResults[i].collider == null && _shadowCommands[i].distance > 0f)
+                if(!_shadowResults[i].collider.CompareTag("AudioSource")) continue;
+
+                if (_shadowCommands[i].distance > 0f)
                 {
                     //found a valid reflection to the audio source
 
