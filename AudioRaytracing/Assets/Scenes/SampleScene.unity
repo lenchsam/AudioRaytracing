@@ -567,13 +567,13 @@ Transform:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 330585543}
   serializedVersion: 2
-  m_LocalRotation: {x: 0.24861963, y: -0, z: -0, w: 0.9686012}
-  m_LocalPosition: {x: 0, y: 4.51, z: -4.32}
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: -0.049, y: 0.718, z: -0.017}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
-  m_Father: {fileID: 0}
-  m_LocalEulerAnglesHint: {x: 28.792, y: 0, z: 0}
+  m_Father: {fileID: 1715834725}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!114 &330585547
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -961,13 +961,16 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   _listener: {fileID: 1715834725}
   _occlusionLayer:
-    serializedVersion: 2
     m_Bits: 1
   _transitionSpeed: 50
   _openVolume: 1
   _openCutoff: 22000
   _occludedVolume: 0.5
   _occludedCutoff: 1200
+  _audioSource: {fileID: 0}
+  _lowPassFilter: {fileID: 0}
+  _targetVolume: 0
+  _targetCutoff: 0
 --- !u!169 &527004080
 AudioLowPassFilter:
   m_ObjectHideFlags: 0
@@ -1488,6 +1491,8 @@ GameObject:
   - component: {fileID: 1715834723}
   - component: {fileID: 1715834722}
   - component: {fileID: 1715834726}
+  - component: {fileID: 1715834727}
+  - component: {fileID: 1715834728}
   m_Layer: 0
   m_Name: Player
   m_TagString: Player
@@ -1583,7 +1588,8 @@ Transform:
   m_LocalPosition: {x: -2.9, y: 1, z: -0.100000024}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
-  m_Children: []
+  m_Children:
+  - {fileID: 330585546}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!114 &1715834726
@@ -1604,6 +1610,79 @@ MonoBehaviour:
   _receiverSensitivity: 18
   _checkInterval: 0.1
   _audioSource: {fileID: 527004077}
+--- !u!114 &1715834727
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1715834721}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 92c0384e2f781e0418a959a320586f48, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  moveSpeed: 5
+  jumpHeight: 2
+  gravity: -9.81
+  mouseSensitivity: 0.1
+  cameraTransform: {fileID: 330585546}
+--- !u!143 &1715834728
+CharacterController:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1715834721}
+  m_Material: {fileID: 0}
+  m_IncludeLayers:
+    serializedVersion: 2
+    m_Bits: 0
+  m_ExcludeLayers:
+    serializedVersion: 2
+    m_Bits: 0
+  m_LayerOverridePriority: 0
+  m_ProvidesContacts: 0
+  m_Enabled: 1
+  serializedVersion: 3
+  m_Height: 2
+  m_Radius: 0.5
+  m_SlopeLimit: 45
+  m_StepOffset: 0.3
+  m_SkinWidth: 0.08
+  m_MinMoveDistance: 0.001
+  m_Center: {x: 0, y: 0, z: 0}
+--- !u!1 &1891843418
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1891843419}
+  m_Layer: 0
+  m_Name: GameObject
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &1891843419
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1891843418}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: -0.59121, y: -0, z: -2.37515}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &2095770571
 GameObject:
   m_ObjectHideFlags: 0
@@ -1717,10 +1796,10 @@ MeshFilter:
 SceneRoots:
   m_ObjectHideFlags: 0
   m_Roots:
-  - {fileID: 330585546}
   - {fileID: 410087041}
   - {fileID: 832575519}
   - {fileID: 527004077}
   - {fileID: 1715834725}
   - {fileID: 45199904}
   - {fileID: 699477328}
+  - {fileID: 1891843419}
