@@ -1,0 +1,135 @@
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel CSMain
+
+struct Cube
+{
+    float3 min;
+    float3 max;
+};
+
+StructuredBuffer<Cube> _Cubes;
+int _CubeCount;
+
+StructuredBuffer<float3> _Directions;
+int _RayCount;
+int _MaxBounces;
+
+float3 _ListenerPos;
+float3 _SourcePos;
+
+RWStructuredBuffer<float3> _RayPathBuffer;
+
+RWStructuredBuffer<float> _RayVolumes;
+
+float IntersectBox(float3 origin, float3 dir, float3 boxMin, float3 boxMax, out float3 outNormal)
+{
+    outNormal = float3(0, 1, 0);
+
+    float3 invDir = 1.0 / dir;
+    float3 t1 = (boxMin - origin) * invDir;
+    float3 t2 = (boxMax - origin) * invDir;
+    float3 tMin = min(t1, t2);
+    float3 tMax = max(t1, t2);
+
+    float tNear = max(max(tMin.x, tMin.y), tMin.z);
+    float tFar = min(min(tMax.x, tMax.y), tMax.z);
+
+    //miss or behind or too close
+    if (tNear > tFar || tFar <= 0.0 || tNear <= 0.001)
+        return 10000.0;
+
+    //get normal from whichever axis the hit point is closest to
+    float3 hitPoint = origin + dir * tNear;
+    float3 center = (boxMin + boxMax) * 0.5;
+    float3 halfSize = (boxMax - boxMin) * 0.5;
+    float3 localP = hitPoint - center;
+    float3 d = abs(localP / halfSize);
+
+    if (d.x >= d.y && d.x >= d.z)
+        outNormal = float3(sign(localP.x), 0, 0);
+    else if (d.y >= d.z)
+        outNormal = float3(0, sign(localP.y), 0);
+    else
+        outNormal = float3(0, 0, sign(localP.z));
+
+    return tNear;
+}
+
+[numthreads(64, 1, 1)]
+void CSMain(uint3 id : SV_DispatchThreadID)
+{
+    uint rayIndex = id.x;
+    if ((int) rayIndex >= _RayCount)
+        return;
+
+    float3 origin = _ListenerPos;
+    float3 dir = _Directions[rayIndex];
+    
+    _RayPathBuffer[rayIndex * 4] = origin;
+
+    float energy = 1.0;
+    float totalDist = 0.0;
+    float contrib = 0.0;
+    
+    for (int bounce = 0; bounce < _MaxBounces; bounce++)
+    {
+        float closestT = 10000.0;
+        float3 hitNormal = float3(0, 1, 0);
+
+        for (int c = 0; c < _CubeCount; c++)
+        {
+            float3 n;
+            float t = IntersectBox(origin, dir, _Cubes[c].min, _Cubes[c].max, n);
+            if (t < closestT)
+            {
+                closestT = t;
+                hitNormal = n;
+            }
+        }
+
+        if (closestT >= 9999.0)
+        {
+            for (int j = bounce + 1; j < 4; j++)
+                _RayPathBuffer[rayIndex * 4 + j] = float3(0, 0, 0);
+            break;
+        }
+
+        float3 hitPoint = origin + dir * closestT;
+        _RayPathBuffer[rayIndex * 4 + bounce + 1] = hitPoint;
+        
+        totalDist += closestT;
+        energy *= 0.8; //absorbtion
+
+        // SHADOW RAYS
+        float3 toSource = _SourcePos - hitPoint;
+        float distToSource = length(toSource);
+        float3 shadowDir = toSource / distToSource;
+        float3 shadowOrigin = hitPoint + hitNormal * 0.001;
+
+        bool occluded = false;
+        for (int sc = 0; sc < _CubeCount; sc++)
+        {
+            float3 dummy;
+            float st = IntersectBox(shadowOrigin, shadowDir, _Cubes[sc].min, _Cubes[sc].max, dummy);
+            if (st < distToSource - 0.01)
+            {
+                occluded = true;
+                break;
+            }
+        }
+
+        if (!occluded)
+        {
+            //inverse square law approximation
+            float finalDist = totalDist + distToSource;
+            float attenuation = 1.0 / max(1.0, finalDist * finalDist);
+            contrib += energy * attenuation;
+        }
+
+        //next bounce prep
+        dir = reflect(dir, hitNormal);
+        origin = hitPoint + hitNormal * 0.01;
+    }
+    
+    _RayVolumes[rayIndex] = contrib;
+}

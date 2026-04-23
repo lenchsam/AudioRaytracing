@@ -1,40 +1,56 @@
-using Unity.Collections;
-using Unity.Jobs;
+using System.Linq;
 using UnityEngine;
 
 public class AudioRaytracer : MonoBehaviour
 {
-    const float SPEED_OF_SOUND = 343f; //meters per second
+    [SerializeField] private ComputeShader _computeShader;
 
-    [SerializeField] private int _rayCount = 32;
+    [SerializeField] private int _rayCount = 64;    //must be a multiple of 64
     [SerializeField] private int _maxBounces = 3;
-
     [SerializeField] private float _receiverSensitivity = 15f;
-
-    [SerializeField]  private float _checkInterval = 0.1f; //in seconds
-    private float _timeSinceLastCheck = 0f;
-
-    //native arrays as they dont create garbage
-    //can also be used with jobs
-    private NativeArray<RaycastCommand> _commands;
-    private NativeArray<RaycastHit> _results;
-
-    private NativeArray<RaycastCommand> _shadowCommands;
-    private NativeArray<RaycastHit> _shadowResults;
-
-    private Vector3[] _baseDirections;
+    [SerializeField] private float _checkInterval = 0.1f;
 
     [SerializeField] private Transform _audioSource;
 
-    void Start()
+    private int _kernelIndex;
+    private float _timeSinceLastCheck;
+
+    private ComputeBuffer _cubesBuffer;
+    private ComputeBuffer _directionsBuffer;
+    private ComputeBuffer _rayVolumesBuffer;
+
+    private float[] _rayVolumesReadback;
+
+    private ComputeBuffer _rayPathBuffer;
+    private Vector3[] _rayPathsReadback;
+
+    //needs to match the struct layout in the AudioRaytracing compute shader (2 × float3 = 24 bytes)
+    struct Cube
     {
-        _commands = new NativeArray<RaycastCommand>(_rayCount, Allocator.Persistent);
-        _results = new NativeArray<RaycastHit>(_rayCount, Allocator.Persistent);
+        public Vector3 min;
+        public Vector3 max;
+    }
 
-        _shadowCommands = new NativeArray<RaycastCommand>(_rayCount, Allocator.Persistent);
-        _shadowResults = new NativeArray<RaycastHit>(_rayCount, Allocator.Persistent);
+    void OnEnable()
+    {
+        if (_computeShader == null) return;
 
-        _baseDirections = FibonacciSphere.GenerateDirections(_rayCount);
+        _kernelIndex = _computeShader.FindKernel("CSMain");
+
+        //geometry baking
+        RebuildCubeBuffer();
+
+        //ray setup
+        Vector3[] directions = FibonacciSphere.GenerateDirections(_rayCount);
+        _directionsBuffer = new ComputeBuffer(_rayCount, sizeof(float) * 3);
+        _directionsBuffer.SetData(directions);
+
+        //output buffers
+        _rayVolumesBuffer = new ComputeBuffer(_rayCount, sizeof(float));
+        _rayVolumesReadback = new float[_rayCount];
+
+        _rayPathBuffer = new ComputeBuffer(_rayCount * 4, sizeof(float) * 3);
+        _rayPathsReadback = new Vector3[_rayCount * 4];
     }
 
     void Update()
@@ -47,130 +63,97 @@ public class AudioRaytracer : MonoBehaviour
         }
     }
 
-    void TraceAcoustics()
+    void OnDisable()
     {
-        NativeArray<Vector3> currentOrigins = new NativeArray<Vector3>(_rayCount, Allocator.Temp);
-        NativeArray<Vector3> currentDirections = new NativeArray<Vector3>(_rayCount, Allocator.Temp);
-        NativeArray<bool> rayAlive = new NativeArray<bool>(_rayCount, Allocator.Temp);
+        // Release existing buffers
+        _cubesBuffer?.Release();
+        _cubesBuffer = null;
 
-        //initialize rays for first bounce
-        NativeArray<float> totalDistances = new NativeArray<float>(_rayCount, Allocator.Temp);
-        NativeArray<float> rayEnergies = new NativeArray<float>(_rayCount, Allocator.Temp);
+        _directionsBuffer?.Release();
+        _directionsBuffer = null;
 
-        for (int i = 0; i < _rayCount; i++)
-        {
-            currentOrigins[i] = transform.position;
-            currentDirections[i] = _baseDirections[i];
-            rayAlive[i] = true;
-            totalDistances[i] = 0f;
-            rayEnergies[i] = 1.0f;
-        }
+        _rayVolumesBuffer?.Release();
+        _rayVolumesBuffer = null;
 
-        float totalVolume = 0f;
+        _rayPathBuffer?.Release();
+        _rayPathBuffer = null;
 
-        for (int bounce = 0; bounce < _maxBounces; bounce++)
-        {
-            //schedule raycast batches for all alive rays
-            // schedule raycast batches for all alive rays
-            for (int i = 0; i < _rayCount; i++)
-            {
-                if (rayAlive[i])
-                {
-                    _commands[i] = new RaycastCommand(currentOrigins[i], currentDirections[i], 100f);
-                }
-                else
-                {
-                    //if a ray is dead fill with blank raycast
-                    _commands[i] = new RaycastCommand(Vector3.zero, Vector3.up, 0f);
-                }
-            }
-
-            JobHandle handle = RaycastCommand.ScheduleBatch(_commands, _results, 1, default);
-            handle.Complete(); //wait until done
-
-            //process results and prepare for next bounce + shadow rays
-            for (int i = 0; i < _rayCount; i++)
-            {
-                if (!rayAlive[i]) continue;
-
-                if (_results[i].collider != null)
-                {
-                    //hit a wall
-                    Vector3 hitPoint = _results[i].point;
-                    Vector3 normal = _results[i].normal;
-
-                    totalDistances[i] += _results[i].distance;
-                    rayEnergies[i] *= 0.8f;
-
-                    Debug.DrawLine(currentOrigins[i], hitPoint, Color.green, _checkInterval);
-
-                    //reflection for next bounce
-                    Vector3 incomingDir = currentDirections[i];
-                    Vector3 reflectDir = Vector3.Reflect(incomingDir, normal);
-
-                    //update states for the next iteration of the bounce loop
-                    currentOrigins[i] = hitPoint + normal * 0.01f;
-                    currentDirections[i] = reflectDir;
-
-                    Vector3 dirToSource = (_audioSource.position - hitPoint).normalized;
-
-                    float distToSource = Vector3.Distance(hitPoint, _audioSource.position) - 0.1f;
-                    _shadowCommands[i] = new RaycastCommand(hitPoint + normal * 0.01f, dirToSource, Mathf.Max(0f, distToSource));
-                }
-                else
-                {
-                    //ray escaped
-                    Debug.DrawRay(currentOrigins[i], currentDirections[i] * 100f, Color.red, _checkInterval);
-                    rayAlive[i] = false;
-                    _shadowCommands[i] = new RaycastCommand(Vector3.zero, Vector3.up, 0f);
-                }
-            }
-
-            //evaluate shadow rays
-            //this is where we check if the reflection point can see the audio source or not
-            JobHandle shadowHandle = RaycastCommand.ScheduleBatch(_shadowCommands, _shadowResults, 1, default);
-            shadowHandle.Complete();
-
-            for (int i = 0; i < _rayCount; i++)
-            {
-                if (!rayAlive[i]) continue;
-
-                bool pathIsClear = _shadowResults[i].collider == null || _shadowResults[i].collider.CompareTag("AudioSource");
-
-                if (pathIsClear)
-                {
-                    float finalDistance = totalDistances[i] + Vector3.Distance(currentOrigins[i], _audioSource.position);
-
-                    float delay = finalDistance / SPEED_OF_SOUND;
-
-                    float distanceAttenuation = 1.0f / Mathf.Max(1.0f, finalDistance);
-                    float finalVolume = rayEnergies[i] * distanceAttenuation;
-
-                    totalVolume += finalVolume;
-
-                    Debug.DrawLine(currentOrigins[i], _audioSource.position, Color.yellow, _checkInterval);
-                }
-            }
-        }
-
-        //clean up temp arrays
-        if (_audioSource.TryGetComponent<AudioSource>(out var audioComponent))
-        {
-            audioComponent.volume = Mathf.Clamp01((totalVolume / _rayCount) * _receiverSensitivity);
-        }
-
-        currentOrigins.Dispose();
-        currentDirections.Dispose();
-        rayAlive.Dispose();
-        totalDistances.Dispose();
-        rayEnergies.Dispose();
+        _rayVolumesReadback = null;
+        _rayPathsReadback = null;
     }
 
-    void OnDestroy()
+    //needs to be called when geometry changes during runtime
+    public void RebuildCubeBuffer()
     {
-        if (_commands.IsCreated) _commands.Dispose();
-        if (_results.IsCreated) _results.Dispose();
-        if (_shadowCommands.IsCreated) _shadowCommands.Dispose();
-        if (_shadowResults.IsCreated) _shadowResults.Dispose();
+        BoxCollider[] colliders = FindObjectsOfType<BoxCollider>();
+
+        Cube[] cubes = colliders
+            .Select(bc => new Cube { min = bc.bounds.min, max = bc.bounds.max })
+            .ToArray();
+
+        //compute buffers complain when they have 0 elements
+        if (cubes.Length == 0)
+            cubes = new[] { new Cube { min = Vector3.zero, max = Vector3.zero } };
+
+        _cubesBuffer?.Release();
+        _cubesBuffer = new ComputeBuffer(cubes.Length, sizeof(float) * 6); // 2 × float3
+        _cubesBuffer.SetData(cubes);
+    }
+
+    //run compute shader and get back results
+    void TraceAcoustics()
+    {
+        //inputs
+        _computeShader.SetBuffer(_kernelIndex, "_Cubes", _cubesBuffer);
+        _computeShader.SetInt("_CubeCount", _cubesBuffer.count);
+
+        _computeShader.SetVector("_ListenerPos", transform.position);
+        _computeShader.SetVector("_SourcePos", _audioSource.position);
+
+        _computeShader.SetBuffer(_kernelIndex, "_Directions", _directionsBuffer);
+        _computeShader.SetInt("_RayCount", _rayCount);
+        _computeShader.SetInt("_MaxBounces", _maxBounces);
+
+        //output
+        _computeShader.SetBuffer(_kernelIndex, "_RayVolumes", _rayVolumesBuffer);
+
+        _computeShader.SetBuffer(_kernelIndex, "_RayPathBuffer", _rayPathBuffer);
+
+        int threadGroups = Mathf.CeilToInt(_rayCount / 64.0f);
+        _computeShader.Dispatch(_kernelIndex, threadGroups, 1, 1);
+
+        _rayPathBuffer.GetData(_rayPathsReadback);
+
+        _rayVolumesBuffer.GetData(_rayVolumesReadback);
+
+        float totalVolume = 0f;
+        for (int i = 0; i < _rayCount; i++)
+            totalVolume += _rayVolumesReadback[i];
+
+        if (_audioSource.TryGetComponent<AudioSource>(out var audioComponent))
+        {
+            audioComponent.volume =
+                Mathf.Clamp01((totalVolume / _rayCount) * _receiverSensitivity);
+        }
+    }
+    private void OnDrawGizmos()
+    {
+        if (_rayPathsReadback == null || _rayPathsReadback.Length == 0) return;
+
+        Gizmos.color = Color.cyan;
+        for (int i = 0; i < _rayCount; i++)
+        {
+            int offset = i * 4;
+            for (int b = 0; b < 3; b++)
+            {
+                Vector3 start = _rayPathsReadback[offset + b];
+                Vector3 end = _rayPathsReadback[offset + b + 1];
+
+                if (end == Vector3.zero) break;
+
+                Gizmos.DrawLine(start, end);
+                Gizmos.DrawSphere(end, 0.05f);
+            }
+        }
     }
 }
