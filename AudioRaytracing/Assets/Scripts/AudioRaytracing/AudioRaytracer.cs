@@ -10,10 +10,11 @@ public class AudioRaytracer : MonoBehaviour
     [SerializeField] private float _receiverSensitivity = 15f;
     [SerializeField] private float _checkInterval = 0.1f;
 
-    [SerializeField] private Transform _audioSource;
+    [SerializeField] private AudioSource _audioSource;
 
     private int _kernelIndex;
     private float _timeSinceLastCheck;
+    private int _pathStride; //maxBoundes + 1
 
     private ComputeBuffer _cubesBuffer;
     private ComputeBuffer _directionsBuffer;
@@ -37,6 +38,8 @@ public class AudioRaytracer : MonoBehaviour
 
         _kernelIndex = _computeShader.FindKernel("CSMain");
 
+        _pathStride = _maxBounces + 1;
+
         //geometry baking
         RebuildCubeBuffer();
 
@@ -49,8 +52,8 @@ public class AudioRaytracer : MonoBehaviour
         _rayVolumesBuffer = new ComputeBuffer(_rayCount, sizeof(float));
         _rayVolumesReadback = new float[_rayCount];
 
-        _rayPathBuffer = new ComputeBuffer(_rayCount * 4, sizeof(float) * 3);
-        _rayPathsReadback = new Vector3[_rayCount * 4];
+        _rayPathBuffer = new ComputeBuffer(_rayCount * _pathStride, sizeof(float) * 3);
+        _rayPathsReadback = new Vector3[_rayCount * _pathStride];
     }
 
     void Update()
@@ -65,7 +68,7 @@ public class AudioRaytracer : MonoBehaviour
 
     void OnDisable()
     {
-        // Release existing buffers
+        //release existing buffers
         _cubesBuffer?.Release();
         _cubesBuffer = null;
 
@@ -103,37 +106,51 @@ public class AudioRaytracer : MonoBehaviour
     //run compute shader and get back results
     void TraceAcoustics()
     {
-        //inputs
+        if (_computeShader == null || _cubesBuffer == null || _directionsBuffer == null) return;
+
+        //settings parameters for compute shader
         _computeShader.SetBuffer(_kernelIndex, "_Cubes", _cubesBuffer);
         _computeShader.SetInt("_CubeCount", _cubesBuffer.count);
 
         _computeShader.SetVector("_ListenerPos", transform.position);
-        _computeShader.SetVector("_SourcePos", _audioSource.position);
+        _computeShader.SetVector("_SourcePos", _audioSource.transform.position);
 
         _computeShader.SetBuffer(_kernelIndex, "_Directions", _directionsBuffer);
         _computeShader.SetInt("_RayCount", _rayCount);
         _computeShader.SetInt("_MaxBounces", _maxBounces);
+        _computeShader.SetInt("_PathStride", _pathStride);
 
-        //output
         _computeShader.SetBuffer(_kernelIndex, "_RayVolumes", _rayVolumesBuffer);
-
         _computeShader.SetBuffer(_kernelIndex, "_RayPathBuffer", _rayPathBuffer);
 
+        //send compute shader to GPU
         int threadGroups = Mathf.CeilToInt(_rayCount / 64.0f);
         _computeShader.Dispatch(_kernelIndex, threadGroups, 1, 1);
 
+        //get results back from GPU
         _rayPathBuffer.GetData(_rayPathsReadback);
-
         _rayVolumesBuffer.GetData(_rayVolumesReadback);
 
+        //average volume
         float totalVolume = 0f;
-        for (int i = 0; i < _rayCount; i++)
-            totalVolume += _rayVolumesReadback[i];
+        int contributingRays = 0;
 
-        if (_audioSource.TryGetComponent<AudioSource>(out var audioComponent))
+        for (int i = 0; i < _rayCount; i++)
         {
-            audioComponent.volume =
-                Mathf.Clamp01((totalVolume / _rayCount) * _receiverSensitivity);
+            if (_rayVolumesReadback[i] > 0f)
+            {
+                totalVolume += _rayVolumesReadback[i];
+                contributingRays++;
+            }
+        }
+
+        //set audio source volume based on average energy of contributing rays
+        if (_audioSource != null)
+        {
+            float averageEnergy = contributingRays > 0 ? totalVolume / contributingRays : 0f;
+            float finalVolume = Mathf.Sqrt(averageEnergy) * _receiverSensitivity;
+
+            _audioSource.volume = Mathf.Clamp01(finalVolume);
         }
     }
     private void OnDrawGizmos()
@@ -143,8 +160,8 @@ public class AudioRaytracer : MonoBehaviour
         Gizmos.color = Color.cyan;
         for (int i = 0; i < _rayCount; i++)
         {
-            int offset = i * 4;
-            for (int b = 0; b < 3; b++)
+            int offset = i * _pathStride;
+            for (int b = 0; b < _maxBounces; b++)
             {
                 Vector3 start = _rayPathsReadback[offset + b];
                 Vector3 end = _rayPathsReadback[offset + b + 1];
