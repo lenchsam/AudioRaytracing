@@ -25,6 +25,8 @@ public class PlayerMovement : MonoBehaviour
         controls = new InputSystem_Actions();
 
         controls.Player.Jump.performed += ctx => Jump();
+
+        Cursor.lockState = CursorLockMode.Locked;
     }
     void OnEnable() {
         controls.Enable();

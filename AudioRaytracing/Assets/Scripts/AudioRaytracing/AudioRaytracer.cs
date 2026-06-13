@@ -37,6 +37,16 @@ public class AudioRaytracer : MonoBehaviour
     private float _currentPan;
     private float _targetPan;
 
+    [Header("Line of Sight")]
+    [SerializeField] private LayerMask _occlusionMask = ~0;
+    [SerializeField] private float _probeRadius = 0.35f;
+    [SerializeField] private float _directPathThreshold = 0.2f;
+
+    private Vector3[] _probeOffsets = new Vector3[5];
+    private Vector3[] _probeFroms = new Vector3[5];  //for gizmos
+    private bool[] _probeBlocked = new bool[5];      //for gizmos
+    private float _lastVisibility;
+
     //needs to match the struct layout in the AudioRaytracing compute shader (2 × float3 = 24 bytes)
     struct Cube
     {
@@ -137,6 +147,24 @@ public class AudioRaytracer : MonoBehaviour
     {
         if (_computeShader == null || _cubesBuffer == null || _directionsBuffer == null) return;
 
+        //check if the audio source is visible from the listener's position
+        Vector3 listenerPos = transform.position;
+        Vector3 sourcePos = _audioSource.transform.position;
+        Vector3 toSource = sourcePos - listenerPos;
+        float dist = toSource.magnitude;
+
+        _lastVisibility = ComputeVisibility(listenerPos, sourcePos);
+
+        if (_lastVisibility > _directPathThreshold)
+        {
+            float directVolume = Mathf.Clamp01(
+                Mathf.Sqrt(1f / (dist * dist + 1e-6f)) * _receiverSensitivity * _lastVisibility);
+
+            _targetVolume = directVolume;
+            _targetPan = Mathf.Clamp(Vector3.Dot(toSource.normalized, transform.right), -1f, 1f);
+            return;
+        }
+
         //settings parameters for compute shader
         _computeShader.SetBuffer(_kernelIndex, "_Cubes", _cubesBuffer);
         _computeShader.SetInt("_CubeCount", _cubesBuffer.count);
@@ -164,25 +192,18 @@ public class AudioRaytracer : MonoBehaviour
 
         //average volume
         float totalVolume = 0f;
-        int contributingRays = 0;
 
         for (int i = 0; i < _rayCount; i++)
         {
             if (_rayVolumesReadback[i] > 0f)
             {
                 totalVolume += _rayVolumesReadback[i];
-                contributingRays++;
             }
         }
 
-        //set audio source volume based on average energy of contributing rays
-        if (_audioSource != null)
-        {
-            float averageEnergy = totalVolume / _rayCount;
-
-            float targetVolume = Mathf.Clamp01(Mathf.Sqrt(averageEnergy) * _receiverSensitivity);
-            _targetVolume = Mathf.Clamp01(Mathf.Sqrt(averageEnergy) * _receiverSensitivity);
-        }
+        float averageEnergy = totalVolume / _rayCount;
+        float raytracedVolume = Mathf.Clamp01(Mathf.Sqrt(averageEnergy) * _receiverSensitivity);
+        _targetVolume = raytracedVolume;
 
         Vector3 weightedDir = Vector3.zero;
         for (int i = 0; i < _rayCount; i++)
@@ -191,6 +212,44 @@ public class AudioRaytracer : MonoBehaviour
         _targetPan = weightedDir.sqrMagnitude > 1e-6f
                    ? Mathf.Clamp(Vector3.Dot(weightedDir.normalized, transform.right), -1f, 1f)
                    : 0f;
+
+        if (_lastVisibility > 0f)
+        {
+            float directVolume = Mathf.Clamp01(
+                Mathf.Sqrt(1f / (dist * dist + 1e-6f)) * _receiverSensitivity);
+            float directPan = Mathf.Clamp(
+                Vector3.Dot(toSource.normalized, transform.right), -1f, 1f);
+
+            float blend = _lastVisibility / _directPathThreshold;
+
+            _targetVolume = Mathf.Clamp01(raytracedVolume + directVolume * _lastVisibility);
+            _targetPan = Mathf.Lerp(_targetPan, directPan, blend);
+        }
+    }
+
+    //helper functions 
+    void UpdateProbeOffsets(Vector3 listenerPos)
+    {
+        _probeOffsets[0] = Vector3.zero;                     //center
+        _probeOffsets[1] = transform.right * _probeRadius;   //right ear
+        _probeOffsets[2] = -transform.right * _probeRadius;  //left ear
+        _probeOffsets[3] = transform.up * _probeRadius;      //top of head
+        _probeOffsets[4] = -transform.up * _probeRadius;     //chin
+
+        for (int i = 0; i < _probeOffsets.Length; i++)
+            _probeFroms[i] = listenerPos + _probeOffsets[i];
+    }
+
+    float ComputeVisibility(Vector3 listenerPos, Vector3 sourcePos)
+    {
+        UpdateProbeOffsets(listenerPos);
+        int clear = 0;
+        for (int i = 0; i < _probeFroms.Length; i++)
+        {
+            _probeBlocked[i] = Physics.Linecast(_probeFroms[i], sourcePos, _occlusionMask);
+            if (!_probeBlocked[i]) clear++;
+        }
+        return clear / (float)_probeFroms.Length;
     }
     private void OnDrawGizmos()
     {
@@ -208,6 +267,15 @@ public class AudioRaytracer : MonoBehaviour
                 if (end == Vector3.zero) break;
 
                 Gizmos.DrawLine(start, end);
+            }
+        }
+
+        if (_audioSource != null && _probeFroms != null)
+        {
+            for (int i = 0; i < _probeFroms.Length; i++)
+            {
+                Gizmos.color = _probeBlocked[i] ? Color.red : Color.green;
+                Gizmos.DrawLine(_probeFroms[i], _audioSource.transform.position);
             }
         }
     }

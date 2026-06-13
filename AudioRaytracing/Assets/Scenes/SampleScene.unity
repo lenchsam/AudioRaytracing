@@ -1805,7 +1805,12 @@ MonoBehaviour:
   _checkInterval: 0.1
   _audioSource: {fileID: 527004078}
   _smoothingSpeed: 8
-  _panSmoothingSpeed: 10
+  _panSmoothingSpeed: 20
+  _occlusionMask:
+    serializedVersion: 2
+    m_Bits: 4294967295
+  _probeRadius: 0.35
+  _directPathThreshold: 0.2
 --- !u!114 &1715834727
 MonoBehaviour:
   m_ObjectHideFlags: 0
