@@ -146,12 +146,16 @@ void CSMain(uint3 id : SV_DispatchThreadID)
                 }
             }
             if (!occluded)
-                contrib += energy * (1.0 / (totalDist + distToSource + 1.0));
+            {
+                float fullDist = totalDist + distToSource;
+                contrib += energy / (fullDist * fullDist + 1.0);
+            }
+                
         }
 
         //diffuse Scattering Logic
         float3 perfectReflect = reflect(dir, hitNormal);
-        float3 randomScatter = Hash33(hitPoint + float3(rayIndex, bounce, rayIndex * 0.37));
+        float3 randomScatter = Hash33(float3(rayIndex * 0.1031, bounce * 0.7843, 0.4357));
         dir = normalize(lerp(perfectReflect, hitNormal + randomScatter, 0.5));
         origin = hitPoint + hitNormal * 0.01;
     }

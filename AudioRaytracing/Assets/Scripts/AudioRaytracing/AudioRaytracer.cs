@@ -25,6 +25,10 @@ public class AudioRaytracer : MonoBehaviour
     private ComputeBuffer _rayPathBuffer;
     private Vector3[] _rayPathsReadback;
 
+    [SerializeField] private float _smoothingSpeed = 8f;
+    private float _currentVolume;
+    private float _targetVolume;
+
     //needs to match the struct layout in the AudioRaytracing compute shader (2 × float3 = 24 bytes)
     struct Cube
     {
@@ -64,6 +68,10 @@ public class AudioRaytracer : MonoBehaviour
             TraceAcoustics();
             _timeSinceLastCheck = 0f;
         }
+
+        _currentVolume = Mathf.Lerp(_currentVolume, _targetVolume, Time.deltaTime * _smoothingSpeed);
+        if (_audioSource != null)
+            _audioSource.volume = _currentVolume;
     }
 
     void OnDisable()
@@ -147,10 +155,12 @@ public class AudioRaytracer : MonoBehaviour
         //set audio source volume based on average energy of contributing rays
         if (_audioSource != null)
         {
-            float averageEnergy = contributingRays > 0 ? totalVolume / contributingRays : 0f;
-            float finalVolume = Mathf.Sqrt(averageEnergy) * _receiverSensitivity;
+            float averageEnergy = totalVolume / _rayCount;
 
-            _audioSource.volume = Mathf.Clamp01(finalVolume);
+            float targetVolume = Mathf.Clamp01(Mathf.Sqrt(averageEnergy) * _receiverSensitivity);
+            _targetVolume = targetVolume;
+            _currentVolume = Mathf.Lerp(_currentVolume, targetVolume, Time.deltaTime * _smoothingSpeed);
+            _audioSource.volume = _currentVolume;
         }
     }
     private void OnDrawGizmos()

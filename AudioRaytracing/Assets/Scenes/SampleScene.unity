@@ -1793,7 +1793,7 @@ MonoBehaviour:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1715834721}
-  m_Enabled: 1
+  m_Enabled: 0
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: a0062427ced8a2146a38dfa2041ec45a, type: 3}
   m_Name: 
@@ -1801,9 +1801,10 @@ MonoBehaviour:
   _computeShader: {fileID: 7200000, guid: 57f7cb633b6436b4888f8bee726bef1e, type: 3}
   _rayCount: 10048
   _maxBounces: 5
-  _receiverSensitivity: 3
+  _receiverSensitivity: 10
   _checkInterval: 0.1
   _audioSource: {fileID: 527004078}
+  _smoothingSpeed: 8
 --- !u!114 &1715834727
 MonoBehaviour:
   m_ObjectHideFlags: 0
