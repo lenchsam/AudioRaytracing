@@ -5,6 +5,7 @@ public class AudioRaytracer : MonoBehaviour
 {
     [SerializeField] private ComputeShader _computeShader;
 
+    [Header("Raytracing Settings")]
     [SerializeField] private int _rayCount = 64;    //must be a multiple of 64
     [SerializeField] private int _maxBounces = 3;
     [SerializeField] private float _receiverSensitivity = 15f;
@@ -25,9 +26,16 @@ public class AudioRaytracer : MonoBehaviour
     private ComputeBuffer _rayPathBuffer;
     private Vector3[] _rayPathsReadback;
 
+    private ComputeBuffer _rayArrivalDirsBuffer;
+    private Vector3[] _rayArrivalDirsReadback;
+    [Header("Volume Smoothing")]
     [SerializeField] private float _smoothingSpeed = 8f;
     private float _currentVolume;
     private float _targetVolume;
+
+    [SerializeField] private float _panSmoothingSpeed = 5f;
+    private float _currentPan;
+    private float _targetPan;
 
     //needs to match the struct layout in the AudioRaytracing compute shader (2 × float3 = 24 bytes)
     struct Cube
@@ -58,22 +66,10 @@ public class AudioRaytracer : MonoBehaviour
 
         _rayPathBuffer = new ComputeBuffer(_rayCount * _pathStride, sizeof(float) * 3);
         _rayPathsReadback = new Vector3[_rayCount * _pathStride];
+
+        _rayArrivalDirsBuffer = new ComputeBuffer(_rayCount, sizeof(float) * 3);
+        _rayArrivalDirsReadback = new Vector3[_rayCount];
     }
-
-    void Update()
-    {
-        _timeSinceLastCheck += Time.deltaTime;
-        if (_timeSinceLastCheck >= _checkInterval)
-        {
-            TraceAcoustics();
-            _timeSinceLastCheck = 0f;
-        }
-
-        _currentVolume = Mathf.Lerp(_currentVolume, _targetVolume, Time.deltaTime * _smoothingSpeed);
-        if (_audioSource != null)
-            _audioSource.volume = _currentVolume;
-    }
-
     void OnDisable()
     {
         //release existing buffers
@@ -91,7 +87,32 @@ public class AudioRaytracer : MonoBehaviour
 
         _rayVolumesReadback = null;
         _rayPathsReadback = null;
+
+        _rayArrivalDirsBuffer?.Release();
+        _rayArrivalDirsBuffer = null;
+        _rayArrivalDirsReadback = null;
     }
+
+    void Update()
+    {
+        _timeSinceLastCheck += Time.deltaTime;
+        if (_timeSinceLastCheck >= _checkInterval)
+        {
+            TraceAcoustics();
+            _timeSinceLastCheck = 0f;
+        }
+
+        _currentVolume = Mathf.Lerp(_currentVolume, _targetVolume, Time.deltaTime * _smoothingSpeed);
+        if (_audioSource != null)
+            _audioSource.volume = _currentVolume;
+
+        _currentPan = Mathf.Lerp(_currentPan, _targetPan, Time.deltaTime * _panSmoothingSpeed);
+        if (_audioSource != null)
+            _audioSource.panStereo = _currentPan;
+
+    }
+
+
 
     //needs to be called when geometry changes during runtime
     public void RebuildCubeBuffer()
@@ -130,6 +151,7 @@ public class AudioRaytracer : MonoBehaviour
 
         _computeShader.SetBuffer(_kernelIndex, "_RayVolumes", _rayVolumesBuffer);
         _computeShader.SetBuffer(_kernelIndex, "_RayPathBuffer", _rayPathBuffer);
+        _computeShader.SetBuffer(_kernelIndex, "_RayArrivalDirs", _rayArrivalDirsBuffer);
 
         //send compute shader to GPU
         int threadGroups = Mathf.CeilToInt(_rayCount / 64.0f);
@@ -138,6 +160,7 @@ public class AudioRaytracer : MonoBehaviour
         //get results back from GPU
         _rayPathBuffer.GetData(_rayPathsReadback);
         _rayVolumesBuffer.GetData(_rayVolumesReadback);
+        _rayArrivalDirsBuffer.GetData(_rayArrivalDirsReadback);
 
         //average volume
         float totalVolume = 0f;
@@ -158,10 +181,16 @@ public class AudioRaytracer : MonoBehaviour
             float averageEnergy = totalVolume / _rayCount;
 
             float targetVolume = Mathf.Clamp01(Mathf.Sqrt(averageEnergy) * _receiverSensitivity);
-            _targetVolume = targetVolume;
-            _currentVolume = Mathf.Lerp(_currentVolume, targetVolume, Time.deltaTime * _smoothingSpeed);
-            _audioSource.volume = _currentVolume;
+            _targetVolume = Mathf.Clamp01(Mathf.Sqrt(averageEnergy) * _receiverSensitivity);
         }
+
+        Vector3 weightedDir = Vector3.zero;
+        for (int i = 0; i < _rayCount; i++)
+            weightedDir += _rayArrivalDirsReadback[i];
+
+        _targetPan = weightedDir.sqrMagnitude > 1e-6f
+                   ? Mathf.Clamp(Vector3.Dot(weightedDir.normalized, transform.right), -1f, 1f)
+                   : 0f;
     }
     private void OnDrawGizmos()
     {
@@ -179,7 +208,6 @@ public class AudioRaytracer : MonoBehaviour
                 if (end == Vector3.zero) break;
 
                 Gizmos.DrawLine(start, end);
-                Gizmos.DrawSphere(end, 0.05f);
             }
         }
     }

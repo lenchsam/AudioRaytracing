@@ -19,6 +19,7 @@ float3 _SourcePos;
 
 RWStructuredBuffer<float3> _RayPathBuffer;
 RWStructuredBuffer<float> _RayVolumes;
+RWStructuredBuffer<float3> _RayArrivalDirs;
 
 // Random scatter helper
 float3 Hash33(float3 p)
@@ -67,6 +68,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     if ((int) rayIndex >= _RayCount)
         return;
 
+    float3 weightedDir = float3(0, 0, 0);
     float3 origin = _ListenerPos;
     float3 dir = _Directions[rayIndex];
     
@@ -98,7 +100,11 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         }
     }
     if (rayIndex == 0 && !directOccluded)
-        contrib += 1.0 / (directDist * directDist + 1e-6f);
+    {
+        float directContrib = 1.0 / (directDist * directDist + 1e-6f);
+        contrib += directContrib;
+        weightedDir += normalize(_SourcePos - _ListenerPos) * directContrib;
+    }
 
     //bounces
     for (int bounce = 0; bounce < _MaxBounces; bounce++)
@@ -148,7 +154,11 @@ void CSMain(uint3 id : SV_DispatchThreadID)
             if (!occluded)
             {
                 float fullDist = totalDist + distToSource;
-                contrib += energy / (fullDist * fullDist + 1.0);
+                float bounceContrib = energy / (fullDist * fullDist + 1.0);
+                contrib += bounceContrib;
+                
+                //store the weighted direction for this ray
+                weightedDir += _Directions[rayIndex] * bounceContrib;
             }
                 
         }
@@ -160,4 +170,5 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         origin = hitPoint + hitNormal * 0.01;
     }
     _RayVolumes[rayIndex] = contrib;
+    _RayArrivalDirs[rayIndex] = weightedDir;
 }
