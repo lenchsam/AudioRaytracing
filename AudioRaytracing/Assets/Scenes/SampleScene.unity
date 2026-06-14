@@ -972,7 +972,7 @@ AudioSource:
   serializedVersion: 4
   OutputAudioMixerGroup: {fileID: 0}
   m_audioClip: {fileID: 0}
-  m_Resource: {fileID: 8300000, guid: 11834f225715c6c49899540f33c62405, type: 3}
+  m_Resource: {fileID: 8300000, guid: 57aee909e9f7f36478198714bc363ee2, type: 3}
   m_PlayOnAwake: 1
   m_Volume: 1
   m_Pitch: 1
@@ -1803,7 +1803,7 @@ Transform:
   m_GameObject: {fileID: 1715834721}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: -2.9, y: 1, z: -0.100000024}
+  m_LocalPosition: {x: 4.14, y: 1, z: -3.33}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children:
@@ -1826,6 +1826,7 @@ MonoBehaviour:
   _rayCount: 10048
   _maxBounces: 5
   _receiverSensitivity: 10
+  _directSensitivity: 6
   _checkInterval: 0.1
   _audioSource: {fileID: 527004078}
   _smoothingSpeed: 8
@@ -1843,6 +1844,14 @@ MonoBehaviour:
   _reverbSensitivity: 50
   _reverbSmoothingSpeed: 4
   _maxDecayTime: 12
+  _lowAbsorption: 0.9
+  _highAbsorption: 0.6
+  _enableOcclusionMuffling: 1
+  _lowPassFilter: {fileID: 0}
+  _openCutoff: 22000
+  _occludedCutoff: 700
+  _diffractionRange: 3
+  _diffractionSteps: 6
 --- !u!114 &1715834727
 MonoBehaviour:
   m_ObjectHideFlags: 0

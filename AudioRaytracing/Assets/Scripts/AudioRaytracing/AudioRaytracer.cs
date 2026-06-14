@@ -9,6 +9,7 @@ public class AudioRaytracer : MonoBehaviour
     [SerializeField] private int _rayCount = 64;    //must be a multiple of 64
     [SerializeField] private int _maxBounces = 3;
     [SerializeField] private float _receiverSensitivity = 15f;
+    [SerializeField] private float _directSensitivity = 6f;
     [SerializeField] private float _checkInterval = 0.1f;
 
     [SerializeField] private AudioSource _audioSource;
@@ -57,16 +58,32 @@ public class AudioRaytracer : MonoBehaviour
     [SerializeField] private float _reverbSmoothingSpeed = 4f;
     [SerializeField] private float _maxDecayTime = 12f;
 
+    [Header("Frequency Bands")]
+    [SerializeField, Range(0f, 1f)] private float _lowAbsorption = 0.9f;   //bass survives bounces
+    [SerializeField, Range(0f, 1f)] private float _highAbsorption = 0.6f;  //treble is absorbed faster
+
+    [Header("Occlusion Muffling")]
+    [SerializeField] private bool _enableOcclusionMuffling = true;
+    [SerializeField] private AudioLowPassFilter _lowPassFilter;
+    [SerializeField] private float _openCutoff = 22000f;     //clear line of sight
+    [SerializeField] private float _occludedCutoff = 700f;   //deep in the acoustic shadow
+    [SerializeField] private float _diffractionRange = 3f;   //metres of sidestep before fully muffled
+    [SerializeField] private int _diffractionSteps = 6;      //shadow-depth search resolution
+
     private ComputeBuffer _rayEnergyBinsBuffer;
-    private float[] _rayEnergyBinsReadback;
-    private float[] _echogram;          //per-bin energy summed across all rays
+    private Vector2[] _rayEnergyBinsReadback;
+    private float[] _echogramLow;
+    private float[] _echogramHigh;
     private float _binDuration;
 
     private float _currentDecayTime = 0.1f, _targetDecayTime = 0.1f;
+    private float _currentDecayHFRatio = 1f, _targetDecayHFRatio = 1f;
     private float _currentReverbLevel = -10000f, _targetReverbLevel = -10000f;
+    private float _currentRoomHF = 0f, _targetRoomHF = 0f;
     private float _currentReflectionsLevel = -10000f, _targetReflectionsLevel = -10000f;
     private float _currentReflectionsDelay, _targetReflectionsDelay;
     private float _currentReverbDelay, _targetReverbDelay;
+    private float _currentCutoff = 22000f, _targetCutoff = 22000f;
 
     //needs to match the struct layout in the AudioRaytracing compute shader (2 × float3 = 24 bytes)
     struct Cube
@@ -106,9 +123,10 @@ public class AudioRaytracer : MonoBehaviour
         _reverbMaxTime = Mathf.Max(0.01f, _reverbMaxTime);
         _binDuration = _reverbMaxTime / _reverbBinCount;
 
-        _rayEnergyBinsBuffer = new ComputeBuffer(_rayCount * _reverbBinCount, sizeof(float));
-        _rayEnergyBinsReadback = new float[_rayCount * _reverbBinCount];
-        _echogram = new float[_reverbBinCount];
+        _rayEnergyBinsBuffer = new ComputeBuffer(_rayCount * _reverbBinCount, sizeof(float) * 2);
+        _rayEnergyBinsReadback = new Vector2[_rayCount * _reverbBinCount];
+        _echogramLow = new float[_reverbBinCount];
+        _echogramHigh = new float[_reverbBinCount];
 
         if (_reverbFilter == null && _audioSource != null)
             _reverbFilter = _audioSource.GetComponent<AudioReverbFilter>();
@@ -116,6 +134,11 @@ public class AudioRaytracer : MonoBehaviour
             _reverbFilter = _audioSource.gameObject.AddComponent<AudioReverbFilter>();
         if (_reverbFilter != null)
             _reverbFilter.reverbPreset = AudioReverbPreset.User;
+
+        if (_lowPassFilter == null && _audioSource != null)
+            _lowPassFilter = _audioSource.GetComponent<AudioLowPassFilter>();
+        if (_lowPassFilter == null && _audioSource != null && _enableOcclusionMuffling)
+            _lowPassFilter = _audioSource.gameObject.AddComponent<AudioLowPassFilter>();
     }
     void OnDisable()
     {
@@ -142,7 +165,8 @@ public class AudioRaytracer : MonoBehaviour
         _rayEnergyBinsBuffer?.Release();
         _rayEnergyBinsBuffer = null;
         _rayEnergyBinsReadback = null;
-        _echogram = null;
+        _echogramLow = null;
+        _echogramHigh = null;
     }
 
     void Update()
@@ -166,17 +190,27 @@ public class AudioRaytracer : MonoBehaviour
         {
             float k = Time.deltaTime * _reverbSmoothingSpeed;
             _currentDecayTime = Mathf.Lerp(_currentDecayTime, _targetDecayTime, k);
+            _currentDecayHFRatio = Mathf.Lerp(_currentDecayHFRatio, _targetDecayHFRatio, k);
             _currentReverbLevel = Mathf.Lerp(_currentReverbLevel, _targetReverbLevel, k);
+            _currentRoomHF = Mathf.Lerp(_currentRoomHF, _targetRoomHF, k);
             _currentReflectionsLevel = Mathf.Lerp(_currentReflectionsLevel, _targetReflectionsLevel, k);
             _currentReflectionsDelay = Mathf.Lerp(_currentReflectionsDelay, _targetReflectionsDelay, k);
             _currentReverbDelay = Mathf.Lerp(_currentReverbDelay, _targetReverbDelay, k);
 
             _reverbFilter.decayTime = _currentDecayTime;
+            _reverbFilter.decayHFRatio = _currentDecayHFRatio;
             _reverbFilter.reverbLevel = _currentReverbLevel;
+            _reverbFilter.roomHF = _currentRoomHF;
             _reverbFilter.reflectionsLevel = _currentReflectionsLevel;
             _reverbFilter.reflectionsDelay = _currentReflectionsDelay;
             _reverbFilter.reverbDelay = _currentReverbDelay;
             _reverbFilter.dryLevel = 0f;
+        }
+
+        if (_enableOcclusionMuffling && _lowPassFilter != null)
+        {
+            _currentCutoff = Mathf.Lerp(_currentCutoff, _targetCutoff, Time.deltaTime * _reverbSmoothingSpeed);
+            _lowPassFilter.cutoffFrequency = _currentCutoff;
         }
 
     }
@@ -214,11 +248,11 @@ public class AudioRaytracer : MonoBehaviour
         float dist = toSource.magnitude;
 
         _lastVisibility = ComputeVisibility(listenerPos, sourcePos);
+        _targetCutoff = Mathf.Lerp(_occludedCutoff, _openCutoff, ComputeOpenness(listenerPos, sourcePos));
 
         if (!_enableReverb && _lastVisibility > _directPathThreshold)
         {
-            float directVolume = Mathf.Clamp01(
-                Mathf.Sqrt(1f / (dist * dist + 1e-6f)) * _receiverSensitivity * _lastVisibility);
+            float directVolume = Mathf.Clamp01(_directSensitivity / (dist + 1e-3f) * _lastVisibility);
 
             _targetVolume = directVolume;
             _targetPan = Mathf.Clamp(Vector3.Dot(toSource.normalized, transform.right), -1f, 1f);
@@ -245,6 +279,8 @@ public class AudioRaytracer : MonoBehaviour
         _computeShader.SetInt("_BinCount", _reverbBinCount);
         _computeShader.SetFloat("_BinDuration", _binDuration);
         _computeShader.SetFloat("_SpeedOfSound", _speedOfSound);
+        _computeShader.SetFloat("_AbsorbLow", _lowAbsorption);
+        _computeShader.SetFloat("_AbsorbHigh", _highAbsorption);
 
         //send compute shader to GPU
         int threadGroups = Mathf.CeilToInt(_rayCount / 64.0f);
@@ -282,12 +318,11 @@ public class AudioRaytracer : MonoBehaviour
 
         if (_lastVisibility > 0f)
         {
-            float directVolume = Mathf.Clamp01(
-                Mathf.Sqrt(1f / (dist * dist + 1e-6f)) * _receiverSensitivity);
+            float directVolume = Mathf.Clamp01(_directSensitivity / (dist + 1e-3f));
             float directPan = Mathf.Clamp(
                 Vector3.Dot(toSource.normalized, transform.right), -1f, 1f);
 
-            float blend = _lastVisibility / _directPathThreshold;
+            float blend = Mathf.Clamp01(_lastVisibility / _directPathThreshold);
 
             _targetVolume = Mathf.Clamp01(raytracedVolume + directVolume * _lastVisibility);
             _targetPan = Mathf.Lerp(_targetPan, directPan, blend);
@@ -321,47 +356,91 @@ public class AudioRaytracer : MonoBehaviour
         return clear / (float)_probeFroms.Length;
     }
 
+    //0 = deep in the acoustic shadow, 1 = clear line of sight.
+    float ComputeOpenness(Vector3 listenerPos, Vector3 sourcePos)
+    {
+        if (!Physics.Linecast(listenerPos, sourcePos, _occlusionMask))
+            return 1f;
+
+        Vector3 dir = (sourcePos - listenerPos).normalized;
+        Vector3 right = Vector3.Cross(dir, Vector3.up);
+        if (right.sqrMagnitude < 1e-4f) right = transform.right;   //source directly above/below
+        right.Normalize();
+        Vector3 up = Vector3.Cross(right, dir).normalized;
+
+        float range = Mathf.Max(0.01f, _diffractionRange);
+        int steps = Mathf.Max(1, _diffractionSteps);
+        for (int s = 1; s <= steps; s++)
+        {
+            float radius = range * s / steps;
+            //the smallest sidestep that regains line of sight = how deep in shadow we are
+            if (!Physics.Linecast(listenerPos + right * radius, sourcePos, _occlusionMask) ||
+                !Physics.Linecast(listenerPos - right * radius, sourcePos, _occlusionMask) ||
+                !Physics.Linecast(listenerPos + up * radius, sourcePos, _occlusionMask) ||
+                !Physics.Linecast(listenerPos - up * radius, sourcePos, _occlusionMask))
+            {
+                return 1f - radius / range;
+            }
+        }
+        return 0f;
+    }
+
     void UpdateReverb()
     {
-        System.Array.Clear(_echogram, 0, _echogram.Length);
+        System.Array.Clear(_echogramLow, 0, _echogramLow.Length);
+        System.Array.Clear(_echogramHigh, 0, _echogramHigh.Length);
         for (int r = 0; r < _rayCount; r++)
         {
             int baseIdx = r * _reverbBinCount;
             for (int b = 0; b < _reverbBinCount; b++)
-                _echogram[b] += _rayEnergyBinsReadback[baseIdx + b];
-        }
-
-        float total = 0f;
-        int firstBin = -1;
-        for (int b = 0; b < _reverbBinCount; b++)
-        {
-            if (_echogram[b] > 0f)
             {
-                total += _echogram[b];
-                if (firstBin < 0) firstBin = b;
+                Vector2 v = _rayEnergyBinsReadback[baseIdx + b];
+                _echogramLow[b] += v.x;
+                _echogramHigh[b] += v.y;
             }
         }
 
+        float totalLow = 0f, totalHigh = 0f;
+        int firstBin = -1;
+        for (int b = 0; b < _reverbBinCount; b++)
+        {
+            totalLow += _echogramLow[b];
+            totalHigh += _echogramHigh[b];
+            if (firstBin < 0 && (_echogramLow[b] + _echogramHigh[b]) > 0f)
+                firstBin = b;
+        }
+
+        float totalAll = totalLow + totalHigh;
+
         //no reflections reached the source -> let the reverb fade out
-        if (total <= 1e-9f)
+        if (totalAll <= 1e-9f)
         {
             _targetReverbLevel = -10000f;
             _targetReflectionsLevel = -10000f;
+            _targetRoomHF = 0f;
             _targetDecayTime = 0.1f;
+            _targetDecayHFRatio = 1f;
             return;
         }
 
-        _targetDecayTime = Mathf.Clamp(EstimateRT60(total), 0.1f, _maxDecayTime);
+        float rt60Low = (totalLow > 1e-9f) ? EstimateRT60(_echogramLow, totalLow) : 0.1f;
+        float rt60High = (totalHigh > 1e-9f) ? EstimateRT60(_echogramHigh, totalHigh) : 0.1f;
 
-        float wetGain = Mathf.Clamp01(total * _reverbSensitivity);
-        _targetReverbLevel = Mathf.Lerp(-10000f, 0f, wetGain);
+        _targetDecayTime = Mathf.Clamp(rt60Low, 0.1f, _maxDecayTime);
+
+        //high band usually decays faster -> ratio < 1 darkens the tail over time
+        _targetDecayHFRatio = Mathf.Clamp(rt60High / Mathf.Max(rt60Low, 1e-3f), 0.1f, 2f);
+
+        _targetReverbLevel = Mathf.Lerp(-10000f, 0f, Mathf.Clamp01(totalLow * _reverbSensitivity));
+
+        //roomHF attenuates the reverb's treble when little high-frequency energy survives
+        _targetRoomHF = Mathf.Lerp(-10000f, 0f, Mathf.Clamp01(totalHigh * _reverbSensitivity));
 
         //early reflections = energy arriving in the first ~20% of the window
         int earlyBins = Mathf.Max(1, _reverbBinCount / 5);
         float earlyEnergy = 0f;
-        for (int b = 0; b < earlyBins; b++) earlyEnergy += _echogram[b];
-        float earlyGain = Mathf.Clamp01(earlyEnergy * _reverbSensitivity);
-        _targetReflectionsLevel = Mathf.Lerp(-10000f, 0f, earlyGain);
+        for (int b = 0; b < earlyBins; b++) earlyEnergy += _echogramLow[b] + _echogramHigh[b];
+        _targetReflectionsLevel = Mathf.Lerp(-10000f, 0f, Mathf.Clamp01(earlyEnergy * _reverbSensitivity));
 
         float preDelay = (firstBin >= 0) ? firstBin * _binDuration : 0f;
         _targetReflectionsDelay = Mathf.Clamp(preDelay, 0f, 0.3f);
@@ -369,7 +448,7 @@ public class AudioRaytracer : MonoBehaviour
     }
 
     //Schroeder backward integration of the echogram
-    float EstimateRT60(float total)
+    float EstimateRT60(float[] echo, float total)
     {
         float running = total;     //running = remaining energy from bin b to the end (Schroeder curve)
         float prevDb = 0f;
@@ -392,7 +471,7 @@ public class AudioRaytracer : MonoBehaviour
 
             prevDb = db;
             prevT = t;
-            running -= _echogram[b];
+            running -= echo[b];
         }
 
         if (t5 >= 0f && t25 > t5)

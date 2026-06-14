@@ -20,11 +20,13 @@ float3 _SourcePos;
 RWStructuredBuffer<float3> _RayPathBuffer;
 RWStructuredBuffer<float> _RayVolumes;
 RWStructuredBuffer<float3> _RayArrivalDirs;
-RWStructuredBuffer<float> _RayEnergyBins;
+RWStructuredBuffer<float2> _RayEnergyBins; //x = low band, y = high band
 
 int _BinCount;
 float _BinDuration;
 float _SpeedOfSound;
+float _AbsorbLow;
+float _AbsorbHigh;
 
 // Random scatter helper
 float3 Hash33(float3 p)
@@ -84,11 +86,11 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     }
     
     for (int e = 0; e < _BinCount; e++)
-        _RayEnergyBins[rayIndex * _BinCount + e] = 0.0;
+        _RayEnergyBins[rayIndex * _BinCount + e] = float2(0.0, 0.0);
     
     _RayPathBuffer[rayIndex * _PathStride] = origin;
 
-    float energy = 1.0;
+    float2 energy = float2(1.0, 1.0);
     float totalDist = 0.0;
     float contrib = 0.0;
     
@@ -137,10 +139,10 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         float3 hitPoint = origin + dir * closestT;
         _RayPathBuffer[rayIndex * _PathStride + bounce + 1] = hitPoint;
         totalDist += closestT;
-        energy *= 0.8; //absorbtion
+        energy *= float2(_AbsorbLow, _AbsorbHigh); //frequency-dependent absorption
 
         // SHADOW RAYS
-        if (energy < 0.01)
+        if (max(energy.x, energy.y) < 0.01)
             break;
         
         float3 toSource = _SourcePos - hitPoint;
@@ -162,15 +164,16 @@ void CSMain(uint3 id : SV_DispatchThreadID)
             if (!occluded)
             {
                 float fullDist = totalDist + distToSource;
-                float bounceContrib = energy / (fullDist * fullDist + 1.0);
-                contrib += bounceContrib;
+                float2 bandContrib = energy / (fullDist * fullDist + 1.0);
+                float scalarContrib = (bandContrib.x + bandContrib.y) * 0.5;
+                contrib += scalarContrib;
                 
                 //store the weighted direction for this ray
-                weightedDir += _Directions[rayIndex] * bounceContrib;
+                weightedDir += _Directions[rayIndex] * scalarContrib;
                 
                 int bin = (int) ((fullDist / _SpeedOfSound) / _BinDuration);
                 if (bin >= 0 && bin < _BinCount)
-                    _RayEnergyBins[rayIndex * _BinCount + bin] += bounceContrib;
+                    _RayEnergyBins[rayIndex * _BinCount + bin] += bandContrib;
             }
                 
         }
