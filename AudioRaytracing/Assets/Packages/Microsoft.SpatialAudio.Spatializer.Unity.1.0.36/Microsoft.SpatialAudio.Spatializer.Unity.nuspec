@@ -1,0 +1,15 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2011/08/nuspec.xsd">
+  <metadata>
+    <id>Microsoft.SpatialAudio.Spatializer.Unity</id>
+    <version>1.0.36</version>
+    <authors>Microsoft</authors>
+    <owners>Microsoft,SpatialAudio</owners>
+    <requireLicenseAcceptance>true</requireLicenseAcceptance>
+    <licenseUrl>https://github.com/microsoft/spatialaudio-unity/blob/master/LICENSE</licenseUrl>
+    <projectUrl>https://github.com/microsoft/spatialaudio-unity</projectUrl>
+    <description>Unity Spatializer Plugin with Windows Sonic Support</description>
+    <copyright>© Microsoft Corporation. All rights reserved.</copyright>
+    <tags>Unity HoloLens2 Audio Spatializer</tags>
+  </metadata>
+</package>
