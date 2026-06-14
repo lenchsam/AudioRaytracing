@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
 
@@ -12,7 +13,9 @@ public class AudioRaytracer : MonoBehaviour
     [SerializeField] private float _directSensitivity = 6f;
     [SerializeField] private float _checkInterval = 0.1f;
 
-    [SerializeField] private AudioSource _audioSource;
+    [Header("Audio Sources")]
+    [SerializeField] private AudioSource[] _audioSources;
+    [SerializeField] private bool _autoFindSources = false;
 
     private int _kernelIndex;
     private float _timeSinceLastCheck;
@@ -21,22 +24,17 @@ public class AudioRaytracer : MonoBehaviour
     private ComputeBuffer _cubesBuffer;
     private ComputeBuffer _directionsBuffer;
     private ComputeBuffer _rayVolumesBuffer;
+    private ComputeBuffer _rayPathBuffer;
+    private ComputeBuffer _rayArrivalDirsBuffer;
+    private ComputeBuffer _rayEnergyBinsBuffer;
 
     private float[] _rayVolumesReadback;
-
-    private ComputeBuffer _rayPathBuffer;
-    private Vector3[] _rayPathsReadback;
-
-    private ComputeBuffer _rayArrivalDirsBuffer;
     private Vector3[] _rayArrivalDirsReadback;
+    private Vector2[] _rayEnergyBinsReadback;
+
     [Header("Volume Smoothing")]
     [SerializeField] private float _smoothingSpeed = 8f;
-    private float _currentVolume;
-    private float _targetVolume;
-
     [SerializeField] private float _panSmoothingSpeed = 5f;
-    private float _currentPan;
-    private float _targetPan;
 
     [Header("Line of Sight")]
     [SerializeField] private LayerMask _occlusionMask = ~0;
@@ -45,12 +43,9 @@ public class AudioRaytracer : MonoBehaviour
 
     private Vector3[] _probeOffsets = new Vector3[5];
     private Vector3[] _probeFroms = new Vector3[5];  //for gizmos
-    private bool[] _probeBlocked = new bool[5];      //for gizmos
-    private float _lastVisibility;
 
     [Header("Reverb")]
     [SerializeField] private bool _enableReverb = true;
-    [SerializeField] private AudioReverbFilter _reverbFilter;
     [SerializeField] private int _reverbBinCount = 64;
     [SerializeField] private float _reverbMaxTime = 1.5f;        //length of the impulse-response window in seconds
     [SerializeField] private float _speedOfSound = 343f;
@@ -64,28 +59,43 @@ public class AudioRaytracer : MonoBehaviour
 
     [Header("Occlusion Muffling")]
     [SerializeField] private bool _enableOcclusionMuffling = true;
-    [SerializeField] private AudioLowPassFilter _lowPassFilter;
     [SerializeField] private float _openCutoff = 22000f;     //clear line of sight
     [SerializeField] private float _occludedCutoff = 700f;   //deep in the acoustic shadow
     [SerializeField] private float _diffractionRange = 3f;   //metres of sidestep before fully muffled
     [SerializeField] private int _diffractionSteps = 6;      //shadow-depth search resolution
 
-    private ComputeBuffer _rayEnergyBinsBuffer;
-    private Vector2[] _rayEnergyBinsReadback;
     private float[] _echogramLow;
     private float[] _echogramHigh;
     private float _binDuration;
 
-    private float _currentDecayTime = 0.1f, _targetDecayTime = 0.1f;
-    private float _currentDecayHFRatio = 1f, _targetDecayHFRatio = 1f;
-    private float _currentReverbLevel = -10000f, _targetReverbLevel = -10000f;
-    private float _currentRoomHF = 0f, _targetRoomHF = 0f;
-    private float _currentReflectionsLevel = -10000f, _targetReflectionsLevel = -10000f;
-    private float _currentReflectionsDelay, _targetReflectionsDelay;
-    private float _currentReverbDelay, _targetReverbDelay;
-    private float _currentCutoff = 22000f, _targetCutoff = 22000f;
+    private readonly List<TracedSource> _sources = new List<TracedSource>();
 
-    //needs to match the struct layout in the AudioRaytracing compute shader (2 × float3 = 24 bytes)
+    class TracedSource
+    {
+        public AudioSource source;
+        public AudioReverbFilter reverbFilter;
+        public AudioLowPassFilter lowPassFilter;
+
+        public float currentVolume, targetVolume;
+        public float currentPan, targetPan;
+
+        public float currentDecayTime = 0.1f, targetDecayTime = 0.1f;
+        public float currentDecayHFRatio = 1f, targetDecayHFRatio = 1f;
+        public float currentReverbLevel = -10000f, targetReverbLevel = -10000f;
+        public float currentRoomHF = 0f, targetRoomHF = 0f;
+        public float currentReflectionsLevel = -10000f, targetReflectionsLevel = -10000f;
+        public float currentReflectionsDelay, targetReflectionsDelay;
+        public float currentReverbDelay, targetReverbDelay;
+        public float currentCutoff = 22000f, targetCutoff = 22000f;
+
+        public float lastVisibility;
+
+        //gizmo data
+        public Vector3[] rayPaths;
+        public readonly bool[] probeBlocked = new bool[5];
+    }
+
+    //needs to match the struct layout in the AudioRaytracing compute shader (2 x float3 = 24 bytes)
     struct Cube
     {
         public Vector3 min;
@@ -113,7 +123,6 @@ public class AudioRaytracer : MonoBehaviour
         _rayVolumesReadback = new float[_rayCount];
 
         _rayPathBuffer = new ComputeBuffer(_rayCount * _pathStride, sizeof(float) * 3);
-        _rayPathsReadback = new Vector3[_rayCount * _pathStride];
 
         _rayArrivalDirsBuffer = new ComputeBuffer(_rayCount, sizeof(float) * 3);
         _rayArrivalDirsReadback = new Vector3[_rayCount];
@@ -128,17 +137,7 @@ public class AudioRaytracer : MonoBehaviour
         _echogramLow = new float[_reverbBinCount];
         _echogramHigh = new float[_reverbBinCount];
 
-        if (_reverbFilter == null && _audioSource != null)
-            _reverbFilter = _audioSource.GetComponent<AudioReverbFilter>();
-        if (_reverbFilter == null && _audioSource != null && _enableReverb)
-            _reverbFilter = _audioSource.gameObject.AddComponent<AudioReverbFilter>();
-        if (_reverbFilter != null)
-            _reverbFilter.reverbPreset = AudioReverbPreset.User;
-
-        if (_lowPassFilter == null && _audioSource != null)
-            _lowPassFilter = _audioSource.GetComponent<AudioLowPassFilter>();
-        if (_lowPassFilter == null && _audioSource != null && _enableOcclusionMuffling)
-            _lowPassFilter = _audioSource.gameObject.AddComponent<AudioLowPassFilter>();
+        BuildSourceList();
     }
     void OnDisable()
     {
@@ -156,7 +155,6 @@ public class AudioRaytracer : MonoBehaviour
         _rayPathBuffer = null;
 
         _rayVolumesReadback = null;
-        _rayPathsReadback = null;
 
         _rayArrivalDirsBuffer?.Release();
         _rayArrivalDirsBuffer = null;
@@ -167,6 +165,8 @@ public class AudioRaytracer : MonoBehaviour
         _rayEnergyBinsReadback = null;
         _echogramLow = null;
         _echogramHigh = null;
+
+        _sources.Clear();
     }
 
     void Update()
@@ -174,48 +174,57 @@ public class AudioRaytracer : MonoBehaviour
         _timeSinceLastCheck += Time.deltaTime;
         if (_timeSinceLastCheck >= _checkInterval)
         {
-            TraceAcoustics();
+            for (int i = 0; i < _sources.Count; i++)
+                TraceAcoustics(_sources[i]);
             _timeSinceLastCheck = 0f;
         }
 
-        _currentVolume = Mathf.Lerp(_currentVolume, _targetVolume, Time.deltaTime * _smoothingSpeed);
-        if (_audioSource != null)
-            _audioSource.volume = _currentVolume;
-
-        _currentPan = Mathf.Lerp(_currentPan, _targetPan, Time.deltaTime * _panSmoothingSpeed);
-        if (_audioSource != null)
-            _audioSource.panStereo = _currentPan;
-
-        if (_enableReverb && _reverbFilter != null)
-        {
-            float k = Time.deltaTime * _reverbSmoothingSpeed;
-            _currentDecayTime = Mathf.Lerp(_currentDecayTime, _targetDecayTime, k);
-            _currentDecayHFRatio = Mathf.Lerp(_currentDecayHFRatio, _targetDecayHFRatio, k);
-            _currentReverbLevel = Mathf.Lerp(_currentReverbLevel, _targetReverbLevel, k);
-            _currentRoomHF = Mathf.Lerp(_currentRoomHF, _targetRoomHF, k);
-            _currentReflectionsLevel = Mathf.Lerp(_currentReflectionsLevel, _targetReflectionsLevel, k);
-            _currentReflectionsDelay = Mathf.Lerp(_currentReflectionsDelay, _targetReflectionsDelay, k);
-            _currentReverbDelay = Mathf.Lerp(_currentReverbDelay, _targetReverbDelay, k);
-
-            _reverbFilter.decayTime = _currentDecayTime;
-            _reverbFilter.decayHFRatio = _currentDecayHFRatio;
-            _reverbFilter.reverbLevel = _currentReverbLevel;
-            _reverbFilter.roomHF = _currentRoomHF;
-            _reverbFilter.reflectionsLevel = _currentReflectionsLevel;
-            _reverbFilter.reflectionsDelay = _currentReflectionsDelay;
-            _reverbFilter.reverbDelay = _currentReverbDelay;
-            _reverbFilter.dryLevel = 0f;
-        }
-
-        if (_enableOcclusionMuffling && _lowPassFilter != null)
-        {
-            _currentCutoff = Mathf.Lerp(_currentCutoff, _targetCutoff, Time.deltaTime * _reverbSmoothingSpeed);
-            _lowPassFilter.cutoffFrequency = _currentCutoff;
-        }
-
+        //smoothing runs every frame for every source
+        for (int i = 0; i < _sources.Count; i++)
+            ApplySmoothing(_sources[i]);
     }
 
+    //collects the audio sources we should trace and prepares their filters
+    void BuildSourceList()
+    {
+        _sources.Clear();
 
+        AudioSource[] candidates = _autoFindSources ? FindObjectsOfType<AudioSource>() : _audioSources;
+        if (candidates == null) return;
+
+        foreach (AudioSource src in candidates.Where(s => s != null).Distinct())
+            _sources.Add(CreateTracedSource(src));
+    }
+
+    //wraps an AudioSource in per source state and makes sure it has the filters it needs
+    TracedSource CreateTracedSource(AudioSource src)
+    {
+        var ts = new TracedSource { source = src };
+
+        //reverb & low-pass filters need to live on the sources own GameObject to affect its output
+        ts.reverbFilter = src.GetComponent<AudioReverbFilter>();
+        if (ts.reverbFilter == null && _enableReverb)
+            ts.reverbFilter = src.gameObject.AddComponent<AudioReverbFilter>();
+        if (ts.reverbFilter != null)
+            ts.reverbFilter.reverbPreset = AudioReverbPreset.User;
+
+        ts.lowPassFilter = src.GetComponent<AudioLowPassFilter>();
+        if (ts.lowPassFilter == null && _enableOcclusionMuffling)
+            ts.lowPassFilter = src.gameObject.AddComponent<AudioLowPassFilter>();
+
+        return ts;
+    }
+
+    public void RegisterSource(AudioSource src)
+    {
+        if (src == null || _sources.Any(s => s.source == src)) return;
+        _sources.Add(CreateTracedSource(src));
+    }
+
+    public void UnregisterSource(AudioSource src)
+    {
+        _sources.RemoveAll(s => s.source == src);
+    }
 
     //needs to be called when geometry changes during runtime
     public void RebuildCubeBuffer()
@@ -231,31 +240,35 @@ public class AudioRaytracer : MonoBehaviour
             cubes = new[] { new Cube { min = Vector3.zero, max = Vector3.zero } };
 
         _cubesBuffer?.Release();
-        _cubesBuffer = new ComputeBuffer(cubes.Length, sizeof(float) * 6); // 2 × float3
+        _cubesBuffer = new ComputeBuffer(cubes.Length, sizeof(float) * 6); // 2 x float3
         _cubesBuffer.SetData(cubes);
     }
 
-    //run compute shader and get back results
-    void TraceAcoustics()
+    //run compute shader for a single source and get back results
+    void TraceAcoustics(TracedSource ts)
     {
-        if (_computeShader == null || _cubesBuffer == null || _directionsBuffer == null || _audioSource == null)
+        if (_computeShader == null || _cubesBuffer == null || _directionsBuffer == null || ts.source == null)
             return;
+
+        //make sure this source has somewhere to store its ray paths for gizmos
+        if (ts.rayPaths == null || ts.rayPaths.Length != _rayCount * _pathStride)
+            ts.rayPaths = new Vector3[_rayCount * _pathStride];
 
         //check if the audio source is visible from the listener's position
         Vector3 listenerPos = transform.position;
-        Vector3 sourcePos = _audioSource.transform.position;
+        Vector3 sourcePos = ts.source.transform.position;
         Vector3 toSource = sourcePos - listenerPos;
         float dist = toSource.magnitude;
 
-        _lastVisibility = ComputeVisibility(listenerPos, sourcePos);
-        _targetCutoff = Mathf.Lerp(_occludedCutoff, _openCutoff, ComputeOpenness(listenerPos, sourcePos));
+        ts.lastVisibility = ComputeVisibility(listenerPos, sourcePos, ts.probeBlocked);
+        ts.targetCutoff = Mathf.Lerp(_occludedCutoff, _openCutoff, ComputeOpenness(listenerPos, sourcePos));
 
-        if (!_enableReverb && _lastVisibility > _directPathThreshold)
+        if (!_enableReverb && ts.lastVisibility > _directPathThreshold)
         {
-            float directVolume = Mathf.Clamp01(_directSensitivity / (dist + 1e-3f) * _lastVisibility);
+            float directVolumeOnly = Mathf.Clamp01(_directSensitivity / (dist + 1e-3f) * ts.lastVisibility);
 
-            _targetVolume = directVolume;
-            _targetPan = Mathf.Clamp(Vector3.Dot(toSource.normalized, transform.right), -1f, 1f);
+            ts.targetVolume = directVolumeOnly;
+            ts.targetPan = Mathf.Clamp(Vector3.Dot(toSource.normalized, transform.right), -1f, 1f);
             return;
         }
 
@@ -263,8 +276,8 @@ public class AudioRaytracer : MonoBehaviour
         _computeShader.SetBuffer(_kernelIndex, "_Cubes", _cubesBuffer);
         _computeShader.SetInt("_CubeCount", _cubesBuffer.count);
 
-        _computeShader.SetVector("_ListenerPos", transform.position);
-        _computeShader.SetVector("_SourcePos", _audioSource.transform.position);
+        _computeShader.SetVector("_ListenerPos", listenerPos);
+        _computeShader.SetVector("_SourcePos", sourcePos);
 
         _computeShader.SetBuffer(_kernelIndex, "_Directions", _directionsBuffer);
         _computeShader.SetInt("_RayCount", _rayCount);
@@ -287,7 +300,7 @@ public class AudioRaytracer : MonoBehaviour
         _computeShader.Dispatch(_kernelIndex, threadGroups, 1, 1);
 
         //get results back from GPU
-        _rayPathBuffer.GetData(_rayPathsReadback);
+        _rayPathBuffer.GetData(ts.rayPaths);
         _rayVolumesBuffer.GetData(_rayVolumesReadback);
         _rayArrivalDirsBuffer.GetData(_rayArrivalDirsReadback);
         if (_enableReverb)
@@ -306,32 +319,71 @@ public class AudioRaytracer : MonoBehaviour
 
         float averageEnergy = totalVolume / _rayCount;
         float raytracedVolume = Mathf.Clamp01(Mathf.Sqrt(averageEnergy) * _receiverSensitivity);
-        _targetVolume = raytracedVolume;
+        ts.targetVolume = raytracedVolume;
 
         Vector3 weightedDir = Vector3.zero;
         for (int i = 0; i < _rayCount; i++)
             weightedDir += _rayArrivalDirsReadback[i];
 
-        _targetPan = weightedDir.sqrMagnitude > 1e-6f
+        ts.targetPan = weightedDir.sqrMagnitude > 1e-6f
                    ? Mathf.Clamp(Vector3.Dot(weightedDir.normalized, transform.right), -1f, 1f)
                    : 0f;
 
-        if (_lastVisibility > 0f)
+        if (ts.lastVisibility > 0f)
         {
             float directVolume = Mathf.Clamp01(_directSensitivity / (dist + 1e-3f));
             float directPan = Mathf.Clamp(
                 Vector3.Dot(toSource.normalized, transform.right), -1f, 1f);
 
-            float blend = Mathf.Clamp01(_lastVisibility / _directPathThreshold);
+            float blend = Mathf.Clamp01(ts.lastVisibility / _directPathThreshold);
 
-            _targetVolume = Mathf.Clamp01(raytracedVolume + directVolume * _lastVisibility);
-            _targetPan = Mathf.Lerp(_targetPan, directPan, blend);
+            ts.targetVolume = Mathf.Clamp01(raytracedVolume + directVolume * ts.lastVisibility);
+            ts.targetPan = Mathf.Lerp(ts.targetPan, directPan, blend);
         }
         if (_enableReverb)
-            UpdateReverb();
+            UpdateReverb(ts);
     }
 
     //helper functions 
+    void ApplySmoothing(TracedSource ts)
+    {
+        if (ts.source == null) return;
+
+        ts.currentVolume = Mathf.Lerp(ts.currentVolume, ts.targetVolume, Time.deltaTime * _smoothingSpeed);
+        ts.source.volume = ts.currentVolume;
+
+        ts.currentPan = Mathf.Lerp(ts.currentPan, ts.targetPan, Time.deltaTime * _panSmoothingSpeed);
+        ts.source.panStereo = ts.currentPan;
+
+        if (_enableReverb && ts.reverbFilter != null)
+        {
+            float k = Time.deltaTime * _reverbSmoothingSpeed;
+            ts.currentDecayTime = Mathf.Lerp(ts.currentDecayTime, ts.targetDecayTime, k);
+            ts.currentDecayHFRatio = Mathf.Lerp(ts.currentDecayHFRatio, ts.targetDecayHFRatio, k);
+            ts.currentReverbLevel = Mathf.Lerp(ts.currentReverbLevel, ts.targetReverbLevel, k);
+            ts.currentRoomHF = Mathf.Lerp(ts.currentRoomHF, ts.targetRoomHF, k);
+            ts.currentReflectionsLevel = Mathf.Lerp(ts.currentReflectionsLevel, ts.targetReflectionsLevel, k);
+            ts.currentReflectionsDelay = Mathf.Lerp(ts.currentReflectionsDelay, ts.targetReflectionsDelay, k);
+            ts.currentReverbDelay = Mathf.Lerp(ts.currentReverbDelay, ts.targetReverbDelay, k);
+
+            ts.reverbFilter.decayTime = ts.currentDecayTime;
+            ts.reverbFilter.decayHFRatio = ts.currentDecayHFRatio;
+            ts.reverbFilter.reverbLevel = ts.currentReverbLevel;
+            ts.reverbFilter.roomHF = ts.currentRoomHF;
+            ts.reverbFilter.reflectionsLevel = ts.currentReflectionsLevel;
+            ts.reverbFilter.reflectionsDelay = ts.currentReflectionsDelay;
+            ts.reverbFilter.reverbDelay = ts.currentReverbDelay;
+            ts.reverbFilter.dryLevel = 0f;
+        }
+
+        if (_enableOcclusionMuffling && ts.lowPassFilter != null)
+        {
+            ts.currentCutoff = Mathf.Lerp(ts.currentCutoff, ts.targetCutoff, Time.deltaTime * _reverbSmoothingSpeed);
+            ts.lowPassFilter.cutoffFrequency = ts.currentCutoff;
+        }
+    }
+
+    //helper functions
     void UpdateProbeOffsets(Vector3 listenerPos)
     {
         _probeOffsets[0] = Vector3.zero;                     //center
@@ -344,14 +396,14 @@ public class AudioRaytracer : MonoBehaviour
             _probeFroms[i] = listenerPos + _probeOffsets[i];
     }
 
-    float ComputeVisibility(Vector3 listenerPos, Vector3 sourcePos)
+    float ComputeVisibility(Vector3 listenerPos, Vector3 sourcePos, bool[] probeBlocked)
     {
         UpdateProbeOffsets(listenerPos);
         int clear = 0;
         for (int i = 0; i < _probeFroms.Length; i++)
         {
-            _probeBlocked[i] = Physics.Linecast(_probeFroms[i], sourcePos, _occlusionMask);
-            if (!_probeBlocked[i]) clear++;
+            probeBlocked[i] = Physics.Linecast(_probeFroms[i], sourcePos, _occlusionMask);
+            if (!probeBlocked[i]) clear++;
         }
         return clear / (float)_probeFroms.Length;
     }
@@ -385,7 +437,7 @@ public class AudioRaytracer : MonoBehaviour
         return 0f;
     }
 
-    void UpdateReverb()
+    void UpdateReverb(TracedSource ts)
     {
         System.Array.Clear(_echogramLow, 0, _echogramLow.Length);
         System.Array.Clear(_echogramHigh, 0, _echogramHigh.Length);
@@ -415,36 +467,36 @@ public class AudioRaytracer : MonoBehaviour
         //no reflections reached the source -> let the reverb fade out
         if (totalAll <= 1e-9f)
         {
-            _targetReverbLevel = -10000f;
-            _targetReflectionsLevel = -10000f;
-            _targetRoomHF = 0f;
-            _targetDecayTime = 0.1f;
-            _targetDecayHFRatio = 1f;
+            ts.targetReverbLevel = -10000f;
+            ts.targetReflectionsLevel = -10000f;
+            ts.targetRoomHF = 0f;
+            ts.targetDecayTime = 0.1f;
+            ts.targetDecayHFRatio = 1f;
             return;
         }
 
         float rt60Low = (totalLow > 1e-9f) ? EstimateRT60(_echogramLow, totalLow) : 0.1f;
         float rt60High = (totalHigh > 1e-9f) ? EstimateRT60(_echogramHigh, totalHigh) : 0.1f;
 
-        _targetDecayTime = Mathf.Clamp(rt60Low, 0.1f, _maxDecayTime);
+        ts.targetDecayTime = Mathf.Clamp(rt60Low, 0.1f, _maxDecayTime);
 
         //high band usually decays faster -> ratio < 1 darkens the tail over time
-        _targetDecayHFRatio = Mathf.Clamp(rt60High / Mathf.Max(rt60Low, 1e-3f), 0.1f, 2f);
+        ts.targetDecayHFRatio = Mathf.Clamp(rt60High / Mathf.Max(rt60Low, 1e-3f), 0.1f, 2f);
 
-        _targetReverbLevel = Mathf.Lerp(-10000f, 0f, Mathf.Clamp01(totalLow * _reverbSensitivity));
+        ts.targetReverbLevel = Mathf.Lerp(-10000f, 0f, Mathf.Clamp01(totalLow * _reverbSensitivity));
 
         //roomHF attenuates the reverb's treble when little high-frequency energy survives
-        _targetRoomHF = Mathf.Lerp(-10000f, 0f, Mathf.Clamp01(totalHigh * _reverbSensitivity));
+        ts.targetRoomHF = Mathf.Lerp(-10000f, 0f, Mathf.Clamp01(totalHigh * _reverbSensitivity));
 
         //early reflections = energy arriving in the first ~20% of the window
         int earlyBins = Mathf.Max(1, _reverbBinCount / 5);
         float earlyEnergy = 0f;
         for (int b = 0; b < earlyBins; b++) earlyEnergy += _echogramLow[b] + _echogramHigh[b];
-        _targetReflectionsLevel = Mathf.Lerp(-10000f, 0f, Mathf.Clamp01(earlyEnergy * _reverbSensitivity));
+        ts.targetReflectionsLevel = Mathf.Lerp(-10000f, 0f, Mathf.Clamp01(earlyEnergy * _reverbSensitivity));
 
         float preDelay = (firstBin >= 0) ? firstBin * _binDuration : 0f;
-        _targetReflectionsDelay = Mathf.Clamp(preDelay, 0f, 0.3f);
-        _targetReverbDelay = Mathf.Clamp(preDelay, 0f, 0.1f);
+        ts.targetReflectionsDelay = Mathf.Clamp(preDelay, 0f, 0.3f);
+        ts.targetReverbDelay = Mathf.Clamp(preDelay, 0f, 0.1f);
     }
 
     //Schroeder backward integration of the echogram
@@ -491,29 +543,36 @@ public class AudioRaytracer : MonoBehaviour
     }
     private void OnDrawGizmos()
     {
-        if (_rayPathsReadback == null || _rayPathsReadback.Length == 0) return;
+        if (_sources == null || _sources.Count == 0) return;
 
+        //ray paths, one fan per source
         Gizmos.color = Color.cyan;
-        for (int i = 0; i < _rayCount; i++)
+        foreach (TracedSource ts in _sources)
         {
-            int offset = i * _pathStride;
-            for (int b = 0; b < _maxBounces; b++)
+            if (ts.rayPaths == null) continue;
+            for (int i = 0; i < _rayCount; i++)
             {
-                Vector3 start = _rayPathsReadback[offset + b];
-                Vector3 end = _rayPathsReadback[offset + b + 1];
+                int offset = i * _pathStride;
+                for (int b = 0; b < _maxBounces; b++)
+                {
+                    Vector3 start = ts.rayPaths[offset + b];
+                    Vector3 end = ts.rayPaths[offset + b + 1];
 
-                if (end == Vector3.zero) break;
+                    if (end == Vector3.zero) break;
 
-                Gizmos.DrawLine(start, end);
+                    Gizmos.DrawLine(start, end);
+                }
             }
         }
 
-        if (_audioSource != null && _probeFroms != null)
+        //line of sight probes from the listener to each source
+        foreach (TracedSource ts in _sources)
         {
+            if (ts.source == null) continue;
             for (int i = 0; i < _probeFroms.Length; i++)
             {
-                Gizmos.color = _probeBlocked[i] ? Color.red : Color.green;
-                Gizmos.DrawLine(_probeFroms[i], _audioSource.transform.position);
+                Gizmos.color = ts.probeBlocked[i] ? Color.red : Color.green;
+                Gizmos.DrawLine(_probeFroms[i], ts.source.transform.position);
             }
         }
     }
