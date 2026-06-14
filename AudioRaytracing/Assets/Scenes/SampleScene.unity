@@ -864,6 +864,7 @@ GameObject:
   - component: {fileID: 527004074}
   - component: {fileID: 527004078}
   - component: {fileID: 527004080}
+  - component: {fileID: 527004081}
   m_Layer: 3
   m_Name: AudioSource
   m_TagString: AudioSource
@@ -954,7 +955,7 @@ Transform:
   m_GameObject: {fileID: 527004072}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 4.72, y: 1, z: -7.82}
+  m_LocalPosition: {x: 8.64, y: 1, z: -7.82}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -1082,6 +1083,29 @@ AudioLowPassFilter:
     m_PreInfinity: 2
     m_PostInfinity: 2
     m_RotationOrder: 4
+--- !u!164 &527004081
+AudioReverbFilter:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 527004072}
+  m_Enabled: 1
+  m_DryLevel: 0
+  m_Room: 0
+  m_RoomHF: 0
+  m_DecayTime: 1
+  m_DecayHFRatio: 0.5
+  m_ReflectionsLevel: -10000
+  m_ReverbLevel: 0
+  m_ReverbDelay: 0.04
+  m_Diffusion: 100
+  m_Density: 100
+  m_HFReference: 5000
+  m_RoomLF: 0
+  m_LFReference: 250
+  m_ReflectionsDelay: 0
+  m_ReverbPreset: 27
 --- !u!1 &699477324
 GameObject:
   m_ObjectHideFlags: 0
@@ -1811,6 +1835,14 @@ MonoBehaviour:
     m_Bits: 4294967295
   _probeRadius: 0.35
   _directPathThreshold: 0.2
+  _enableReverb: 1
+  _reverbFilter: {fileID: 527004081}
+  _reverbBinCount: 64
+  _reverbMaxTime: 1.5
+  _speedOfSound: 343
+  _reverbSensitivity: 50
+  _reverbSmoothingSpeed: 4
+  _maxDecayTime: 12
 --- !u!114 &1715834727
 MonoBehaviour:
   m_ObjectHideFlags: 0
