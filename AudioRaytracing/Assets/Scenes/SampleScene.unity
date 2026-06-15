@@ -296,7 +296,7 @@ Transform:
   m_GameObject: {fileID: 200772214}
   serializedVersion: 2
   m_LocalRotation: {x: -0, y: 1, z: -0, w: 0.0000005960464}
-  m_LocalPosition: {x: 3.89, y: 3, z: 0.41}
+  m_LocalPosition: {x: 0.8900001, y: 3, z: 0.40999642}
   m_LocalScale: {x: 13.973323, y: 6, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -955,7 +955,7 @@ Transform:
   m_GameObject: {fileID: 527004072}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 8.64, y: 1, z: -7.82}
+  m_LocalPosition: {x: 8.64, y: 5.25, z: -7.82}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -970,7 +970,7 @@ AudioSource:
   m_GameObject: {fileID: 527004072}
   m_Enabled: 1
   serializedVersion: 4
-  OutputAudioMixerGroup: {fileID: 0}
+  OutputAudioMixerGroup: {fileID: 24300002, guid: 8e968a50410452d41aa3328ccb14dc20, type: 2}
   m_audioClip: {fileID: 0}
   m_Resource: {fileID: 8300000, guid: 57aee909e9f7f36478198714bc363ee2, type: 3}
   m_PlayOnAwake: 1
@@ -981,7 +981,7 @@ AudioSource:
   Spatialize: 1
   SpatializePostEffects: 0
   Priority: 128
-  DopplerLevel: 1
+  DopplerLevel: 0
   MinDistance: 1
   MaxDistance: 500
   Pan2D: 0
@@ -1775,7 +1775,7 @@ AudioSource:
   m_GameObject: {fileID: 1522574026}
   m_Enabled: 1
   serializedVersion: 4
-  OutputAudioMixerGroup: {fileID: 0}
+  OutputAudioMixerGroup: {fileID: 24300002, guid: 8e968a50410452d41aa3328ccb14dc20, type: 2}
   m_audioClip: {fileID: 0}
   m_Resource: {fileID: 8300000, guid: 11834f225715c6c49899540f33c62405, type: 3}
   m_PlayOnAwake: 1
@@ -1786,7 +1786,7 @@ AudioSource:
   Spatialize: 1
   SpatializePostEffects: 0
   Priority: 128
-  DopplerLevel: 1
+  DopplerLevel: 0
   MinDistance: 1
   MaxDistance: 500
   Pan2D: 0
@@ -2081,13 +2081,12 @@ MonoBehaviour:
   _computeShader: {fileID: 7200000, guid: 57f7cb633b6436b4888f8bee726bef1e, type: 3}
   _rayCount: 10048
   _maxBounces: 5
-  _receiverSensitivity: 10
-  _directSensitivity: 6
+  _receiverSensitivity: 5
+  _directSensitivity: 3
   _checkInterval: 0.1
   _audioSources: []
   _autoFindSources: 1
   _smoothingSpeed: 8
-  _panSmoothingSpeed: 20
   _occlusionMask:
     serializedVersion: 2
     m_Bits: 4294967295
@@ -2097,7 +2096,7 @@ MonoBehaviour:
   _reverbBinCount: 64
   _reverbMaxTime: 1.5
   _speedOfSound: 343
-  _reverbSensitivity: 50
+  _reverbSensitivity: 25
   _reverbSmoothingSpeed: 4
   _maxDecayTime: 12
   _lowAbsorption: 0.9

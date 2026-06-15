@@ -34,7 +34,6 @@ public class AudioRaytracer : MonoBehaviour
 
     [Header("Volume Smoothing")]
     [SerializeField] private float _smoothingSpeed = 8f;
-    [SerializeField] private float _panSmoothingSpeed = 5f;
 
     [Header("Line of Sight")]
     [SerializeField] private LayerMask _occlusionMask = ~0;
@@ -77,7 +76,6 @@ public class AudioRaytracer : MonoBehaviour
         public AudioLowPassFilter lowPassFilter;
 
         public float currentVolume, targetVolume;
-        public float currentPan, targetPan;
 
         public float currentDecayTime = 0.1f, targetDecayTime = 0.1f;
         public float currentDecayHFRatio = 1f, targetDecayHFRatio = 1f;
@@ -201,6 +199,14 @@ public class AudioRaytracer : MonoBehaviour
     {
         var ts = new TracedSource { source = src };
 
+        src.spatialBlend = 1f;            //full 3D
+        src.spatialize = true;            //route through Microsoft Spatializer
+        src.spatializePostEffects = false;
+        src.dopplerLevel = 0f;
+
+        src.rolloffMode = AudioRolloffMode.Custom;
+        src.SetCustomCurve(AudioSourceCurveType.CustomRolloff, AnimationCurve.Constant(0f, 1f, 1f));
+
         //reverb & low-pass filters need to live on the sources own GameObject to affect its output
         ts.reverbFilter = src.GetComponent<AudioReverbFilter>();
         if (ts.reverbFilter == null && _enableReverb)
@@ -211,6 +217,8 @@ public class AudioRaytracer : MonoBehaviour
         ts.lowPassFilter = src.GetComponent<AudioLowPassFilter>();
         if (ts.lowPassFilter == null && _enableOcclusionMuffling)
             ts.lowPassFilter = src.gameObject.AddComponent<AudioLowPassFilter>();
+
+
 
         return ts;
     }
@@ -268,7 +276,6 @@ public class AudioRaytracer : MonoBehaviour
             float directVolumeOnly = Mathf.Clamp01(_directSensitivity / (dist + 1e-3f) * ts.lastVisibility);
 
             ts.targetVolume = directVolumeOnly;
-            ts.targetPan = Mathf.Clamp(Vector3.Dot(toSource.normalized, transform.right), -1f, 1f);
             return;
         }
 
@@ -325,10 +332,6 @@ public class AudioRaytracer : MonoBehaviour
         for (int i = 0; i < _rayCount; i++)
             weightedDir += _rayArrivalDirsReadback[i];
 
-        ts.targetPan = weightedDir.sqrMagnitude > 1e-6f
-                   ? Mathf.Clamp(Vector3.Dot(weightedDir.normalized, transform.right), -1f, 1f)
-                   : 0f;
-
         if (ts.lastVisibility > 0f)
         {
             float directVolume = Mathf.Clamp01(_directSensitivity / (dist + 1e-3f));
@@ -338,7 +341,6 @@ public class AudioRaytracer : MonoBehaviour
             float blend = Mathf.Clamp01(ts.lastVisibility / _directPathThreshold);
 
             ts.targetVolume = Mathf.Clamp01(raytracedVolume + directVolume * ts.lastVisibility);
-            ts.targetPan = Mathf.Lerp(ts.targetPan, directPan, blend);
         }
         if (_enableReverb)
             UpdateReverb(ts);
@@ -352,8 +354,10 @@ public class AudioRaytracer : MonoBehaviour
         ts.currentVolume = Mathf.Lerp(ts.currentVolume, ts.targetVolume, Time.deltaTime * _smoothingSpeed);
         ts.source.volume = ts.currentVolume;
 
-        ts.currentPan = Mathf.Lerp(ts.currentPan, ts.targetPan, Time.deltaTime * _panSmoothingSpeed);
-        ts.source.panStereo = ts.currentPan;
+        //ts.currentPan = Mathf.Lerp(ts.currentPan, ts.targetPan, Time.deltaTime * _panSmoothingSpeed);
+        //ts.source.panStereo = ts.currentPan;
+
+        ts.source.panStereo = 0f;
 
         if (_enableReverb && ts.reverbFilter != null)
         {
