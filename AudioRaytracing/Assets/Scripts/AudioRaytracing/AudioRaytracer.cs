@@ -154,6 +154,7 @@ public class AudioRaytracer : MonoBehaviour
         _echogramLow = new float[_reverbBinCount];
         _echogramHigh = new float[_reverbBinCount];
 
+        _raySourceHitsBuffer = new ComputeBuffer(_rayCount, sizeof(int));
         _raySourceHitsReadback = new int[_rayCount];
 
         if (_listener == null)
@@ -361,6 +362,7 @@ public class AudioRaytracer : MonoBehaviour
             ts.targetVolume = directVolumeOnly;
             ts.targetApparentDir = (toSource.sqrMagnitude > 1e-8f) ? toSource.normalized : ts.currentApparentDir;
             ts.apparentDistance = dist;
+            ts.targetCutoff = ComputeMuffleTarget(ts, listenerPos, sourcePos, 0f);
             return;
         }
 
@@ -400,6 +402,8 @@ public class AudioRaytracer : MonoBehaviour
         if (_enableReverb)
             _rayEnergyBinsBuffer.GetData(_rayEnergyBinsReadback);
 
+        int sourceHits = 0;
+        for (int i = 0; i < _rayCount; i++)
             sourceHits += _raySourceHitsReadback[i];
         float reflectedRatio = Mathf.Clamp01(sourceHits / (float)_rayCount);
         ts.targetCutoff = ComputeMuffleTarget(ts, listenerPos, sourcePos, reflectedRatio);
