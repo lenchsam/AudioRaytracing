@@ -21,6 +21,7 @@ RWStructuredBuffer<float3> _RayPathBuffer;
 RWStructuredBuffer<float> _RayVolumes;
 RWStructuredBuffer<float3> _RayArrivalDirs;
 RWStructuredBuffer<float2> _RayEnergyBins; //x = low band, y = high band
+RWStructuredBuffer<int> _RaySourceHits; //count of bounce points with clear line of sight to the source
 
 int _BinCount;
 float _BinDuration;
@@ -93,6 +94,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     float2 energy = float2(1.0, 1.0);
     float totalDist = 0.0;
     float contrib = 0.0;
+    int sourceHits = 0;
     
     //0-Bounce (Direct Path)
     float3 directToSource = _SourcePos - origin;
@@ -163,6 +165,8 @@ void CSMain(uint3 id : SV_DispatchThreadID)
             }
             if (!occluded)
             {
+                //bounce point can see the source
+                sourceHits++;
                 float fullDist = totalDist + distToSource;
                 float2 bandContrib = energy / (fullDist * fullDist + 1.0);
                 float scalarContrib = (bandContrib.x + bandContrib.y) * 0.5;
@@ -186,4 +190,5 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     }
     _RayVolumes[rayIndex] = contrib;
     _RayArrivalDirs[rayIndex] = weightedDir;
+    _RaySourceHits[rayIndex] = sourceHits;
 }

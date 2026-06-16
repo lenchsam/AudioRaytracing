@@ -27,10 +27,12 @@ public class AudioRaytracer : MonoBehaviour
     private ComputeBuffer _rayPathBuffer;
     private ComputeBuffer _rayArrivalDirsBuffer;
     private ComputeBuffer _rayEnergyBinsBuffer;
+    private ComputeBuffer _raySourceHitsBuffer;
 
     private float[] _rayVolumesReadback;
     private Vector3[] _rayArrivalDirsReadback;
     private Vector2[] _rayEnergyBinsReadback;
+    private int[] _raySourceHitsReadback;
 
     [Header("Volume Smoothing")]
     [SerializeField] private float _smoothingSpeed = 8f;
@@ -63,10 +65,12 @@ public class AudioRaytracer : MonoBehaviour
 
     [Header("Occlusion Muffling")]
     [SerializeField] private bool _enableOcclusionMuffling = true;
+    [SerializeField] private bool _propagationMuffle = true; //derive muffle from the traced shadow rays instead of the sidestep probe
+    [SerializeField] private float _muffleInterpolation = 6f; //log-frequency cutoff smoothing speed
     [SerializeField] private float _openCutoff = 22000f;     //clear line of sight
     [SerializeField] private float _occludedCutoff = 700f;   //deep in the acoustic shadow
-    [SerializeField] private float _diffractionRange = 3f;   //metres of sidestep before fully muffled
-    [SerializeField] private int _diffractionSteps = 6;      //shadow-depth search resolution
+    [SerializeField] private float _diffractionRange = 3f;   //metres of sidestep before fully muffled, only used for the probe
+    [SerializeField] private int _diffractionSteps = 6;      //shadow-depth search resolution, only used for the probe
 
     private float[] _echogramLow;
     private float[] _echogramHigh;
@@ -150,6 +154,8 @@ public class AudioRaytracer : MonoBehaviour
         _echogramLow = new float[_reverbBinCount];
         _echogramHigh = new float[_reverbBinCount];
 
+        _raySourceHitsReadback = new int[_rayCount];
+
         if (_listener == null)
         {
             AudioListener al = FindObjectOfType<AudioListener>();
@@ -184,6 +190,10 @@ public class AudioRaytracer : MonoBehaviour
         _rayEnergyBinsReadback = null;
         _echogramLow = null;
         _echogramHigh = null;
+
+        _raySourceHitsBuffer?.Release();
+        _raySourceHitsBuffer = null;
+        _raySourceHitsReadback = null;
 
         foreach (TracedSource ts in _sources)
         {
@@ -343,7 +353,6 @@ public class AudioRaytracer : MonoBehaviour
         float dist = toSource.magnitude;
 
         ts.lastVisibility = ComputeVisibility(listenerPos, sourcePos, ts.probeBlocked);
-        ts.targetCutoff = Mathf.Lerp(_occludedCutoff, _openCutoff, ComputeOpenness(listenerPos, sourcePos));
 
         if (!_enableReverb && ts.lastVisibility > _directPathThreshold)
         {
@@ -370,6 +379,7 @@ public class AudioRaytracer : MonoBehaviour
         _computeShader.SetBuffer(_kernelIndex, "_RayVolumes", _rayVolumesBuffer);
         _computeShader.SetBuffer(_kernelIndex, "_RayPathBuffer", _rayPathBuffer);
         _computeShader.SetBuffer(_kernelIndex, "_RayArrivalDirs", _rayArrivalDirsBuffer);
+        _computeShader.SetBuffer(_kernelIndex, "_RaySourceHits", _raySourceHitsBuffer);
 
         _computeShader.SetBuffer(_kernelIndex, "_RayEnergyBins", _rayEnergyBinsBuffer);
         _computeShader.SetInt("_BinCount", _reverbBinCount);
@@ -386,8 +396,13 @@ public class AudioRaytracer : MonoBehaviour
         _rayPathBuffer.GetData(ts.rayPaths);
         _rayVolumesBuffer.GetData(_rayVolumesReadback);
         _rayArrivalDirsBuffer.GetData(_rayArrivalDirsReadback);
+        _raySourceHitsBuffer.GetData(_raySourceHitsReadback);
         if (_enableReverb)
             _rayEnergyBinsBuffer.GetData(_rayEnergyBinsReadback);
+
+            sourceHits += _raySourceHitsReadback[i];
+        float reflectedRatio = Mathf.Clamp01(sourceHits / (float)_rayCount);
+        ts.targetCutoff = ComputeMuffleTarget(ts, listenerPos, sourcePos, reflectedRatio);
 
         //average volume
         float totalVolume = 0f;
@@ -469,7 +484,10 @@ public class AudioRaytracer : MonoBehaviour
 
         if (_enableOcclusionMuffling && ts.lowPassFilter != null)
         {
-            ts.currentCutoff = Mathf.Lerp(ts.currentCutoff, ts.targetCutoff, Time.deltaTime * _reverbSmoothingSpeed);
+            float k = 1f - Mathf.Exp(-Time.deltaTime * _muffleInterpolation);
+            float curLog = Mathf.Log(Mathf.Max(ts.currentCutoff, 1f), 2f);
+            float tgtLog = Mathf.Log(Mathf.Max(ts.targetCutoff, 1f), 2f);
+            ts.currentCutoff = Mathf.Pow(2f, Mathf.Lerp(curLog, tgtLog, k));
             ts.lowPassFilter.cutoffFrequency = ts.currentCutoff;
         }
     }
@@ -499,6 +517,7 @@ public class AudioRaytracer : MonoBehaviour
         }
         return clear / (float)_probeFroms.Length;
     }
+
     float ComputeOpenness(Vector3 listenerPos, Vector3 sourcePos)
     {
         // clear straight line -> fully open
@@ -553,6 +572,24 @@ public class AudioRaytracer : MonoBehaviour
         }
 
         return Mathf.Clamp01(1f - bestClear / range);
+    }
+
+    float ComputeMuffleTarget(TracedSource ts, Vector3 listenerPos, Vector3 sourcePos, float reflectedRatio)
+    {
+        if (_propagationMuffle)
+        {
+            float openness = Mathf.Max(ts.lastVisibility, reflectedRatio);
+            return MuffleCutoffFromOpenness(openness);
+        }
+        return MuffleCutoffFromOpenness(ComputeOpenness(listenerPos, sourcePos));
+    }
+
+    float MuffleCutoffFromOpenness(float openness)
+    {
+        openness = Mathf.Clamp01(openness);
+        float logMin = Mathf.Log(Mathf.Max(_occludedCutoff, 1f), 2f);
+        float logMax = Mathf.Log(Mathf.Max(_openCutoff, 1f), 2f);
+        return Mathf.Pow(2f, Mathf.Lerp(logMin, logMax, openness));
     }
 
     void UpdateReverb(TracedSource ts)
@@ -659,6 +696,7 @@ public class AudioRaytracer : MonoBehaviour
         return Mathf.Lerp(t0, t1, Mathf.Clamp01(f));
 
     }
+
     private void OnDrawGizmos()
     {
         if (_sources == null || _sources.Count == 0) return;
