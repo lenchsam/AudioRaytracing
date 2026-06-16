@@ -35,6 +35,11 @@ public class AudioRaytracer : MonoBehaviour
     [Header("Volume Smoothing")]
     [SerializeField] private float _smoothingSpeed = 8f;
 
+    [Header("Directional Spatialization")]
+    [SerializeField] private bool _enableDirectionalRendering = true;
+    [SerializeField] private float _spatialSmoothingSpeed = 6f;
+    [SerializeField] private Transform _listener;
+
     [Header("Line of Sight")]
     [SerializeField] private LayerMask _occlusionMask = ~0;
     [SerializeField] private float _probeRadius = 0.35f;
@@ -67,13 +72,23 @@ public class AudioRaytracer : MonoBehaviour
     private float[] _echogramHigh;
     private float _binDuration;
 
+    private Transform Listener => _listener != null ? _listener : transform;
+    private const string EmitterName = "[AR] SpatialEmitter";
+
     private readonly List<TracedSource> _sources = new List<TracedSource>();
 
     class TracedSource
     {
         public AudioSource source;
+        public AudioSource originalSource;
+        public Transform anchorTransform;
+        public GameObject ownedEmitter;
+
         public AudioReverbFilter reverbFilter;
         public AudioLowPassFilter lowPassFilter;
+
+        public Vector3 currentApparentDir, targetApparentDir;
+        public float apparentDistance;
 
         public float currentVolume, targetVolume;
 
@@ -135,6 +150,12 @@ public class AudioRaytracer : MonoBehaviour
         _echogramLow = new float[_reverbBinCount];
         _echogramHigh = new float[_reverbBinCount];
 
+        if (_listener == null)
+        {
+            AudioListener al = FindObjectOfType<AudioListener>();
+            _listener = (al != null) ? al.transform : transform;
+        }
+
         BuildSourceList();
     }
     void OnDisable()
@@ -164,6 +185,12 @@ public class AudioRaytracer : MonoBehaviour
         _echogramLow = null;
         _echogramHigh = null;
 
+        foreach (TracedSource ts in _sources)
+        {
+            if (ts.originalSource != null) ts.originalSource.enabled = true;
+            if (ts.ownedEmitter != null) Destroy(ts.ownedEmitter);
+        }
+
         _sources.Clear();
     }
 
@@ -190,48 +217,94 @@ public class AudioRaytracer : MonoBehaviour
         AudioSource[] candidates = _autoFindSources ? FindObjectsOfType<AudioSource>() : _audioSources;
         if (candidates == null) return;
 
-        foreach (AudioSource src in candidates.Where(s => s != null).Distinct())
+        foreach (AudioSource src in candidates.Where(s => s != null && s.gameObject.name != EmitterName).Distinct())
             _sources.Add(CreateTracedSource(src));
     }
 
     //wraps an AudioSource in per source state and makes sure it has the filters it needs
-    TracedSource CreateTracedSource(AudioSource src)
+    TracedSource CreateTracedSource(AudioSource orig)
     {
-        var ts = new TracedSource { source = src };
+        var ts = new TracedSource { originalSource = orig, anchorTransform = orig.transform };
 
-        src.spatialBlend = 1f;            //full 3D
-        src.spatialize = true;            //route through Microsoft Spatializer
-        src.spatializePostEffects = false;
-        src.dopplerLevel = 0f;
+        AudioSource emitter = orig;
+        if (_enableDirectionalRendering)
+        {
+            var go = new GameObject(EmitterName);
+            go.transform.SetParent(orig.transform, false);
+            emitter = go.AddComponent<AudioSource>();
 
-        src.rolloffMode = AudioRolloffMode.Custom;
-        src.SetCustomCurve(AudioSourceCurveType.CustomRolloff, AnimationCurve.Constant(0f, 1f, 1f));
+            emitter.clip = orig.clip;
+            emitter.outputAudioMixerGroup = orig.outputAudioMixerGroup;
+            emitter.loop = orig.loop;
+            emitter.pitch = orig.pitch;
+            emitter.priority = orig.priority;
+            emitter.mute = orig.mute;
+            emitter.minDistance = orig.minDistance;
+            emitter.maxDistance = orig.maxDistance;
+            emitter.bypassEffects = orig.bypassEffects;
+            emitter.bypassListenerEffects = orig.bypassListenerEffects;
+            emitter.bypassReverbZones = orig.bypassReverbZones;
+            emitter.playOnAwake = false;
 
-        //reverb & low-pass filters need to live on the sources own GameObject to affect its output
-        ts.reverbFilter = src.GetComponent<AudioReverbFilter>();
+            bool wasPlaying = orig.isPlaying || orig.playOnAwake;
+            int startSamples = (orig.clip != null) ? orig.timeSamples : 0;
+            orig.Stop();
+            orig.enabled = false;
+
+            ts.ownedEmitter = go;
+            if (wasPlaying)
+            {
+                if (orig.clip != null)
+                    emitter.timeSamples = Mathf.Clamp(startSamples, 0, orig.clip.samples - 1);
+                emitter.Play();
+            }
+        }
+
+        ts.source = emitter;
+
+        emitter.spatialBlend = 1f;            //full 3D
+        emitter.spatialize = true;            //route through Microsoft Spatializer
+        emitter.spatializePostEffects = false;
+        emitter.dopplerLevel = 0f;
+
+        emitter.rolloffMode = AudioRolloffMode.Custom;
+        emitter.SetCustomCurve(AudioSourceCurveType.CustomRolloff, AnimationCurve.Constant(0f, 1f, 1f));
+
+        ts.reverbFilter = emitter.GetComponent<AudioReverbFilter>();
         if (ts.reverbFilter == null && _enableReverb)
-            ts.reverbFilter = src.gameObject.AddComponent<AudioReverbFilter>();
+            ts.reverbFilter = emitter.gameObject.AddComponent<AudioReverbFilter>();
         if (ts.reverbFilter != null)
             ts.reverbFilter.reverbPreset = AudioReverbPreset.User;
 
-        ts.lowPassFilter = src.GetComponent<AudioLowPassFilter>();
+        ts.lowPassFilter = emitter.GetComponent<AudioLowPassFilter>();
         if (ts.lowPassFilter == null && _enableOcclusionMuffling)
-            ts.lowPassFilter = src.gameObject.AddComponent<AudioLowPassFilter>();
+            ts.lowPassFilter = emitter.gameObject.AddComponent<AudioLowPassFilter>();
 
-
+        Vector3 toSource = orig.transform.position - Listener.position;
+        ts.currentApparentDir = ts.targetApparentDir =
+            (toSource.sqrMagnitude > 1e-8f) ? toSource.normalized : Listener.forward;
+        ts.apparentDistance = toSource.magnitude;
 
         return ts;
     }
 
     public void RegisterSource(AudioSource src)
     {
-        if (src == null || _sources.Any(s => s.source == src)) return;
+        if (src == null || _sources.Any(s => s.originalSource == src || s.source == src)) return;
         _sources.Add(CreateTracedSource(src));
     }
 
     public void UnregisterSource(AudioSource src)
     {
-        _sources.RemoveAll(s => s.source == src);
+        for (int i = _sources.Count - 1; i >= 0; i--)
+        {
+            TracedSource ts = _sources[i];
+            if (ts.originalSource != src && ts.source != src) continue;
+
+            if (ts.originalSource != null) ts.originalSource.enabled = true;
+            if (ts.ownedEmitter != null) Destroy(ts.ownedEmitter);
+            _sources.RemoveAt(i);
+        }
     }
 
     //needs to be called when geometry changes during runtime
@@ -240,8 +313,9 @@ public class AudioRaytracer : MonoBehaviour
         BoxCollider[] colliders = FindObjectsOfType<BoxCollider>();
 
         Cube[] cubes = colliders
-            .Select(bc => new Cube { min = bc.bounds.min, max = bc.bounds.max })
-            .ToArray();
+               .Where(bc => bc.enabled)
+               .Select(bc => new Cube { min = bc.bounds.min, max = bc.bounds.max })
+               .ToArray();
 
         //compute buffers complain when they have 0 elements
         if (cubes.Length == 0)
@@ -263,8 +337,8 @@ public class AudioRaytracer : MonoBehaviour
             ts.rayPaths = new Vector3[_rayCount * _pathStride];
 
         //check if the audio source is visible from the listener's position
-        Vector3 listenerPos = transform.position;
-        Vector3 sourcePos = ts.source.transform.position;
+        Vector3 listenerPos = Listener.position;
+        Vector3 sourcePos = ts.anchorTransform != null ? ts.anchorTransform.position : ts.source.transform.position;
         Vector3 toSource = sourcePos - listenerPos;
         float dist = toSource.magnitude;
 
@@ -276,6 +350,8 @@ public class AudioRaytracer : MonoBehaviour
             float directVolumeOnly = Mathf.Clamp01(_directSensitivity / (dist + 1e-3f) * ts.lastVisibility);
 
             ts.targetVolume = directVolumeOnly;
+            ts.targetApparentDir = (toSource.sqrMagnitude > 1e-8f) ? toSource.normalized : ts.currentApparentDir;
+            ts.apparentDistance = dist;
             return;
         }
 
@@ -328,20 +404,23 @@ public class AudioRaytracer : MonoBehaviour
         float raytracedVolume = Mathf.Clamp01(Mathf.Sqrt(averageEnergy) * _receiverSensitivity);
         ts.targetVolume = raytracedVolume;
 
-        Vector3 weightedDir = Vector3.zero;
-        for (int i = 0; i < _rayCount; i++)
-            weightedDir += _rayArrivalDirsReadback[i];
-
         if (ts.lastVisibility > 0f)
         {
             float directVolume = Mathf.Clamp01(_directSensitivity / (dist + 1e-3f));
-            float directPan = Mathf.Clamp(
-                Vector3.Dot(toSource.normalized, transform.right), -1f, 1f);
-
-            float blend = Mathf.Clamp01(ts.lastVisibility / _directPathThreshold);
 
             ts.targetVolume = Mathf.Clamp01(raytracedVolume + directVolume * ts.lastVisibility);
         }
+
+        Vector3 arrivalDir = Vector3.zero;
+        for (int i = 0; i < _rayCount; i++)
+            arrivalDir += _rayArrivalDirsReadback[i];
+
+        Vector3 trueDir = (toSource.sqrMagnitude > 1e-8f) ? toSource.normalized : ts.currentApparentDir;
+        Vector3 reflectedDir = (arrivalDir.sqrMagnitude > 1e-8f) ? arrivalDir.normalized : trueDir;
+
+        ts.targetApparentDir = Vector3.Slerp(reflectedDir, trueDir, Mathf.Clamp01(ts.lastVisibility)).normalized;
+        ts.apparentDistance = dist;
+
         if (_enableReverb)
             UpdateReverb(ts);
     }
@@ -354,10 +433,18 @@ public class AudioRaytracer : MonoBehaviour
         ts.currentVolume = Mathf.Lerp(ts.currentVolume, ts.targetVolume, Time.deltaTime * _smoothingSpeed);
         ts.source.volume = ts.currentVolume;
 
-        //ts.currentPan = Mathf.Lerp(ts.currentPan, ts.targetPan, Time.deltaTime * _panSmoothingSpeed);
-        //ts.source.panStereo = ts.currentPan;
-
         ts.source.panStereo = 0f;
+
+        if (_enableDirectionalRendering && ts.ownedEmitter != null)
+        {
+            ts.currentApparentDir = Vector3.Slerp(
+                ts.currentApparentDir, ts.targetApparentDir, Time.deltaTime * _spatialSmoothingSpeed);
+            if (ts.currentApparentDir.sqrMagnitude > 1e-8f)
+                ts.currentApparentDir.Normalize();
+
+            ts.source.transform.position =
+                Listener.position + ts.currentApparentDir * Mathf.Max(ts.apparentDistance, 0.01f);
+        }
 
         if (_enableReverb && ts.reverbFilter != null)
         {
@@ -390,11 +477,11 @@ public class AudioRaytracer : MonoBehaviour
     //helper functions
     void UpdateProbeOffsets(Vector3 listenerPos)
     {
-        _probeOffsets[0] = Vector3.zero;                     //center
-        _probeOffsets[1] = transform.right * _probeRadius;   //right ear
-        _probeOffsets[2] = -transform.right * _probeRadius;  //left ear
-        _probeOffsets[3] = transform.up * _probeRadius;      //top of head
-        _probeOffsets[4] = -transform.up * _probeRadius;     //chin
+        _probeOffsets[0] = Vector3.zero;                    //center
+        _probeOffsets[1] = Listener.right * _probeRadius;   //right ear
+        _probeOffsets[2] = -Listener.right * _probeRadius;  //left ear
+        _probeOffsets[3] = Listener.up * _probeRadius;      //top of head
+        _probeOffsets[4] = -Listener.up * _probeRadius;     //chin
 
         for (int i = 0; i < _probeOffsets.Length; i++)
             _probeFroms[i] = listenerPos + _probeOffsets[i];
@@ -406,39 +493,66 @@ public class AudioRaytracer : MonoBehaviour
         int clear = 0;
         for (int i = 0; i < _probeFroms.Length; i++)
         {
-            probeBlocked[i] = Physics.Linecast(_probeFroms[i], sourcePos, _occlusionMask);
+            probeBlocked[i] = Physics.Linecast(_probeFroms[i], sourcePos,
+                _occlusionMask, QueryTriggerInteraction.Ignore);
             if (!probeBlocked[i]) clear++;
         }
         return clear / (float)_probeFroms.Length;
     }
-
-    //0 = deep in the acoustic shadow, 1 = clear line of sight.
     float ComputeOpenness(Vector3 listenerPos, Vector3 sourcePos)
     {
-        if (!Physics.Linecast(listenerPos, sourcePos, _occlusionMask))
+        // clear straight line -> fully open
+        if (!Physics.Linecast(listenerPos, sourcePos, _occlusionMask, QueryTriggerInteraction.Ignore))
             return 1f;
 
         Vector3 dir = (sourcePos - listenerPos).normalized;
         Vector3 right = Vector3.Cross(dir, Vector3.up);
-        if (right.sqrMagnitude < 1e-4f) right = transform.right;   //source directly above/below
+        if (right.sqrMagnitude < 1e-4f) right = Listener.right;   // source directly above/below
         right.Normalize();
         Vector3 up = Vector3.Cross(right, dir).normalized;
 
         float range = Mathf.Max(0.01f, _diffractionRange);
-        int steps = Mathf.Max(1, _diffractionSteps);
-        for (int s = 1; s <= steps; s++)
+        int steps = Mathf.Max(2, _diffractionSteps);
+        const int dirCount = 12;                 // ring of escape directions
+
+        float bestClear = range;                 // smallest sidestep that regains line of sight
+
+        for (int a = 0; a < dirCount; a++)
         {
-            float radius = range * s / steps;
-            //the smallest sidestep that regains line of sight = how deep in shadow we are
-            if (!Physics.Linecast(listenerPos + right * radius, sourcePos, _occlusionMask) ||
-                !Physics.Linecast(listenerPos - right * radius, sourcePos, _occlusionMask) ||
-                !Physics.Linecast(listenerPos + up * radius, sourcePos, _occlusionMask) ||
-                !Physics.Linecast(listenerPos - up * radius, sourcePos, _occlusionMask))
+            float ang = (a / (float)dirCount) * Mathf.PI * 2f;
+            // bias toward horizontal so floor/ceiling samples don't dominate
+            Vector3 axis = (right * Mathf.Cos(ang) + up * (0.4f * Mathf.Sin(ang))).normalized;
+
+            float prev = 0f;
+            for (int s = 1; s <= steps; s++)
             {
-                return 1f - radius / range;
+                float radius = range * s / steps;
+                if (radius >= bestClear) break;   //cant beat the current best
+
+                Vector3 probe = listenerPos + axis * radius;
+
+                if (Physics.Linecast(listenerPos, probe, _occlusionMask, QueryTriggerInteraction.Ignore))
+                    break;
+
+                if (!Physics.Linecast(probe, sourcePos, _occlusionMask, QueryTriggerInteraction.Ignore))
+                {
+                    float lo = prev, hi = radius;
+                    for (int it = 0; it < 4; it++)
+                    {
+                        float mid = 0.5f * (lo + hi);
+                        Vector3 m = listenerPos + axis * mid;
+                        bool reach = !Physics.Linecast(listenerPos, m, _occlusionMask, QueryTriggerInteraction.Ignore);
+                        bool sees = reach && !Physics.Linecast(m, sourcePos, _occlusionMask, QueryTriggerInteraction.Ignore);
+                        if (sees) hi = mid; else lo = mid;
+                    }
+                    bestClear = Mathf.Min(bestClear, hi);
+                    break;
+                }
+                prev = radius;
             }
         }
-        return 0f;
+
+        return Mathf.Clamp01(1f - bestClear / range);
     }
 
     void UpdateReverb(TracedSource ts)
@@ -572,12 +686,22 @@ public class AudioRaytracer : MonoBehaviour
         //line of sight probes from the listener to each source
         foreach (TracedSource ts in _sources)
         {
-            if (ts.source == null) continue;
+            Vector3 truePos = ts.anchorTransform != null ? ts.anchorTransform.position
+                                                         : (ts.source != null ? ts.source.transform.position : Vector3.zero);
+            if (ts.anchorTransform == null && ts.source == null) continue;
+
             for (int i = 0; i < _probeFroms.Length; i++)
             {
                 Gizmos.color = ts.probeBlocked[i] ? Color.red : Color.green;
-                Gizmos.DrawLine(_probeFroms[i], ts.source.transform.position);
+                Gizmos.DrawLine(_probeFroms[i], truePos);
             }
+        }
+
+        Gizmos.color = Color.magenta;
+        foreach (TracedSource ts in _sources)
+        {
+            if (ts.source == null) continue;
+            Gizmos.DrawLine(Listener.position, ts.source.transform.position);
         }
     }
 }
