@@ -428,20 +428,69 @@ public class AudioRaytracer : MonoBehaviour
             float directVolume = Mathf.Clamp01(_directSensitivity / (dist + 1e-3f));
 
             ts.targetVolume = Mathf.Clamp01(raytracedVolume + directVolume * ts.lastVisibility);
-        }
-
-        Vector3 arrivalDir = Vector3.zero;
-        for (int i = 0; i < _rayCount; i++)
-            arrivalDir += _rayArrivalDirsReadback[i];
+        };
 
         Vector3 trueDir = (toSource.sqrMagnitude > 1e-8f) ? toSource.normalized : ts.currentApparentDir;
-        Vector3 reflectedDir = (arrivalDir.sqrMagnitude > 1e-8f) ? arrivalDir.normalized : trueDir;
+        Vector3 reflectedDir = ComputeArrivalDirection(trueDir);
 
         ts.targetApparentDir = Vector3.Slerp(reflectedDir, trueDir, Mathf.Clamp01(ts.lastVisibility)).normalized;
         ts.apparentDistance = dist;
 
         if (_enableReverb)
             UpdateReverb(ts);
+    }
+
+    Vector3 ComputeArrivalDirection(Vector3 fallback)
+    {
+        if (_enableReverb && _rayEnergyBinsReadback != null)
+        {
+            int firstBin = int.MaxValue;
+            for (int i = 0; i < _rayCount; i++)
+            {
+                if (_rayArrivalDirsReadback[i].sqrMagnitude < 1e-12f) continue;
+                int baseIdx = i * _reverbBinCount;
+                for (int b = 0; b < _reverbBinCount; b++)
+                {
+                    Vector2 e = _rayEnergyBinsReadback[baseIdx + b];
+                    if (e.x + e.y > 0f)
+                    {
+                        if (b < firstBin) firstBin = b;
+                        break;
+                    }
+                }
+            }
+
+            if (firstBin != int.MaxValue)
+            {
+                int window = Mathf.Max(1, Mathf.CeilToInt(0.06f / Mathf.Max(_binDuration, 1e-4f)));
+                int windowEnd = Mathf.Min(_reverbBinCount, firstBin + window);
+
+                Vector3 early = Vector3.zero;
+                for (int i = 0; i < _rayCount; i++)
+                {
+                    Vector3 d = _rayArrivalDirsReadback[i];
+                    if (d.sqrMagnitude < 1e-12f) continue;
+                    Vector3 launchDir = d.normalized;
+
+                    int baseIdx = i * _reverbBinCount;
+                    float energy = 0f;
+                    for (int b = firstBin; b < windowEnd; b++)
+                    {
+                        Vector2 e = _rayEnergyBinsReadback[baseIdx + b];
+                        energy += e.x + e.y;
+                    }
+                    early += launchDir * energy;
+                }
+
+                if (early.sqrMagnitude > 1e-12f) return early.normalized;
+            }
+        }
+
+        //fallback
+        Vector3 sum = Vector3.zero;
+        for (int i = 0; i < _rayCount; i++)
+            sum += _rayArrivalDirsReadback[i];
+        return (sum.sqrMagnitude > 1e-8f) ? sum.normalized : fallback;
     }
 
     //helper functions 
