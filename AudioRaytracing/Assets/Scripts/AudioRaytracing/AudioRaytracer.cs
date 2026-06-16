@@ -355,10 +355,13 @@ public class AudioRaytracer : MonoBehaviour
 
         ts.lastVisibility = ComputeVisibility(listenerPos, sourcePos, ts.probeBlocked);
 
+        //calculate geometric diffraction/openness around the corner
+        //if propagation muffle is on, we can approximate it using the ratio of rays that hit the source
+        float diffractionOpenness = _propagationMuffle ? Mathf.Clamp01((float)System.Linq.Enumerable.Sum(_raySourceHitsReadback) / _rayCount * 4f) : ComputeOpenness(listenerPos, sourcePos);
+
         if (!_enableReverb && ts.lastVisibility > _directPathThreshold)
         {
             float directVolumeOnly = Mathf.Clamp01(_directSensitivity / (dist + 1e-3f) * ts.lastVisibility);
-
             ts.targetVolume = directVolumeOnly;
             ts.targetApparentDir = (toSource.sqrMagnitude > 1e-8f) ? toSource.normalized : ts.currentApparentDir;
             ts.apparentDistance = dist;
@@ -366,23 +369,19 @@ public class AudioRaytracer : MonoBehaviour
             return;
         }
 
-        //settings parameters for compute shader
+        //compute shader dispatch
         _computeShader.SetBuffer(_kernelIndex, "_Cubes", _cubesBuffer);
         _computeShader.SetInt("_CubeCount", _cubesBuffer.count);
-
         _computeShader.SetVector("_ListenerPos", listenerPos);
         _computeShader.SetVector("_SourcePos", sourcePos);
-
         _computeShader.SetBuffer(_kernelIndex, "_Directions", _directionsBuffer);
         _computeShader.SetInt("_RayCount", _rayCount);
         _computeShader.SetInt("_MaxBounces", _maxBounces);
         _computeShader.SetInt("_PathStride", _pathStride);
-
         _computeShader.SetBuffer(_kernelIndex, "_RayVolumes", _rayVolumesBuffer);
         _computeShader.SetBuffer(_kernelIndex, "_RayPathBuffer", _rayPathBuffer);
         _computeShader.SetBuffer(_kernelIndex, "_RayArrivalDirs", _rayArrivalDirsBuffer);
         _computeShader.SetBuffer(_kernelIndex, "_RaySourceHits", _raySourceHitsBuffer);
-
         _computeShader.SetBuffer(_kernelIndex, "_RayEnergyBins", _rayEnergyBinsBuffer);
         _computeShader.SetInt("_BinCount", _reverbBinCount);
         _computeShader.SetFloat("_BinDuration", _binDuration);
@@ -408,32 +407,41 @@ public class AudioRaytracer : MonoBehaviour
         float reflectedRatio = Mathf.Clamp01(sourceHits / (float)_rayCount);
         ts.targetCutoff = ComputeMuffleTarget(ts, listenerPos, sourcePos, reflectedRatio);
 
-        //average volume
+        //indirect volume
         float totalVolume = 0f;
-
+        int activeRays = 0;
         for (int i = 0; i < _rayCount; i++)
         {
             if (_rayVolumesReadback[i] > 0f)
             {
                 totalVolume += _rayVolumesReadback[i];
+                activeRays++;
             }
         }
 
+        //blend the global ray average with an average of only the rays that hit something
         float averageEnergy = totalVolume / _rayCount;
-        float raytracedVolume = Mathf.Clamp01(Mathf.Sqrt(averageEnergy) * _receiverSensitivity);
-        ts.targetVolume = raytracedVolume;
-
-        if (ts.lastVisibility > 0f)
+        if (activeRays > 0)
         {
-            float directVolume = Mathf.Clamp01(_directSensitivity / (dist + 1e-3f));
+            float activeEnergyAverage = totalVolume / activeRays;
+            averageEnergy = Mathf.Lerp(averageEnergy, activeEnergyAverage, 0.25f);
+        }
 
-            ts.targetVolume = Mathf.Clamp01(raytracedVolume + directVolume * ts.lastVisibility);
-        };
+        float raytracedVolume = Mathf.Clamp01(Mathf.Sqrt(averageEnergy) * _receiverSensitivity);
 
+        //direct and diffracted volume
+        float directVolume = Mathf.Clamp01(_directSensitivity / (dist + 1e-3f));
+
+        float effectiveVisibility = Mathf.Max(ts.lastVisibility, diffractionOpenness * 0.35f);
+
+        //combine indirect reflections with our diffracted direct path
+        ts.targetVolume = Mathf.Clamp01(raytracedVolume + (directVolume * effectiveVisibility));
+
+        //directional positioning ---
         Vector3 trueDir = (toSource.sqrMagnitude > 1e-8f) ? toSource.normalized : ts.currentApparentDir;
         Vector3 reflectedDir = ComputeArrivalDirection(trueDir);
 
-        ts.targetApparentDir = Vector3.Slerp(reflectedDir, trueDir, Mathf.Clamp01(ts.lastVisibility)).normalized;
+        ts.targetApparentDir = Vector3.Slerp(reflectedDir, trueDir, Mathf.Clamp01(effectiveVisibility)).normalized;
         ts.apparentDistance = dist;
 
         if (_enableReverb)
