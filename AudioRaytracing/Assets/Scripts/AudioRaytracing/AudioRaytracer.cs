@@ -285,7 +285,11 @@ public class AudioRaytracer : MonoBehaviour
         if (ts.reverbFilter == null && _enableReverb)
             ts.reverbFilter = emitter.gameObject.AddComponent<AudioReverbFilter>();
         if (ts.reverbFilter != null)
+        {
             ts.reverbFilter.reverbPreset = AudioReverbPreset.User;
+            ts.reverbFilter.reflectionsDelay = 0.02f;
+            ts.reverbFilter.reverbDelay = 0.01f;
+        }
 
         ts.lowPassFilter = emitter.GetComponent<AudioLowPassFilter>();
         if (ts.lowPassFilter == null && _enableOcclusionMuffling)
@@ -530,16 +534,12 @@ public class AudioRaytracer : MonoBehaviour
             ts.currentReverbLevel = Mathf.Lerp(ts.currentReverbLevel, ts.targetReverbLevel, k);
             ts.currentRoomHF = Mathf.Lerp(ts.currentRoomHF, ts.targetRoomHF, k);
             ts.currentReflectionsLevel = Mathf.Lerp(ts.currentReflectionsLevel, ts.targetReflectionsLevel, k);
-            ts.currentReflectionsDelay = Mathf.Lerp(ts.currentReflectionsDelay, ts.targetReflectionsDelay, k);
-            ts.currentReverbDelay = Mathf.Lerp(ts.currentReverbDelay, ts.targetReverbDelay, k);
 
             ts.reverbFilter.decayTime = ts.currentDecayTime;
             ts.reverbFilter.decayHFRatio = ts.currentDecayHFRatio;
             ts.reverbFilter.reverbLevel = ts.currentReverbLevel;
             ts.reverbFilter.roomHF = ts.currentRoomHF;
             ts.reverbFilter.reflectionsLevel = ts.currentReflectionsLevel;
-            ts.reverbFilter.reflectionsDelay = ts.currentReflectionsDelay;
-            ts.reverbFilter.reverbDelay = ts.currentReverbDelay;
             ts.reverbFilter.dryLevel = 0f;
         }
 
@@ -683,8 +683,8 @@ public class AudioRaytracer : MonoBehaviour
         //no reflections reached the source -> let the reverb fade out
         if (totalAll <= 1e-9f)
         {
-            ts.targetReverbLevel = -10000f;
-            ts.targetReflectionsLevel = -10000f;
+            ts.targetReverbLevel = -2000f;
+            ts.targetReflectionsLevel = -2000f;
             ts.targetRoomHF = 0f;
             ts.targetDecayTime = 0.1f;
             ts.targetDecayHFRatio = 1f;
@@ -709,10 +709,6 @@ public class AudioRaytracer : MonoBehaviour
         float earlyEnergy = 0f;
         for (int b = 0; b < earlyBins; b++) earlyEnergy += _echogramLow[b] + _echogramHigh[b];
         ts.targetReflectionsLevel = Mathf.Lerp(-10000f, 0f, Mathf.Clamp01(earlyEnergy * _reverbSensitivity));
-
-        float preDelay = (firstBin >= 0) ? firstBin * _binDuration : 0f;
-        ts.targetReflectionsDelay = Mathf.Clamp(preDelay, 0f, 0.3f);
-        ts.targetReverbDelay = Mathf.Clamp(preDelay, 0f, 0.1f);
     }
 
     //Schroeder backward integration of the echogram
