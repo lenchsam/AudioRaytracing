@@ -424,6 +424,7 @@ public class AudioRaytracer : MonoBehaviour
         ts.traceDist = dist;
         ts.traceDiffractionOpenness = diffractionOpenness;
 
+        _readbackSource = ts;
         _readbackError = false;
         _readbackPending = _enableReverb ? 5 : 4;
         _readbackInFlight = true;
