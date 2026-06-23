@@ -72,6 +72,9 @@ public class AudioRaytracer : MonoBehaviour
     [SerializeField] private float _diffractionRange = 3f;   //metres of sidestep before fully muffled, only used for the probe
     [SerializeField] private int _diffractionSteps = 6;      //shadow-depth search resolution, only used for the probe
 
+    [Header("Debug")]
+    [SerializeField] private bool _drawDebugRays = false;
+
     private float[] _echogramLow;
     private float[] _echogramHigh;
     private float _binDuration;
@@ -348,8 +351,10 @@ public class AudioRaytracer : MonoBehaviour
             return;
 
         //make sure this source has somewhere to store its ray paths for gizmos
-        if (ts.rayPaths == null || ts.rayPaths.Length != _rayCount * _pathStride)
+#if UNITY_EDITOR
+        if (_drawDebugRays && (ts.rayPaths == null || ts.rayPaths.Length != _rayCount * _pathStride))
             ts.rayPaths = new Vector3[_rayCount * _pathStride];
+#endif
 
         //check if the audio source is visible from the listener's position
         Vector3 listenerPos = Listener.position;
@@ -398,12 +403,16 @@ public class AudioRaytracer : MonoBehaviour
         _computeShader.Dispatch(_kernelIndex, threadGroups, 1, 1);
 
         //get results back from GPU
-        _rayPathBuffer.GetData(ts.rayPaths);
         _rayVolumesBuffer.GetData(_rayVolumesReadback);
         _rayArrivalDirsBuffer.GetData(_rayArrivalDirsReadback);
         _raySourceHitsBuffer.GetData(_raySourceHitsReadback);
         if (_enableReverb)
             _rayEnergyBinsBuffer.GetData(_rayEnergyBinsReadback);
+
+#if UNITY_EDITOR
+        if (_drawDebugRays && ts.rayPaths != null)
+            _rayPathBuffer.GetData(ts.rayPaths);
+#endif
 
         int sourceHits = 0;
         for (int i = 0; i < _rayCount; i++)
@@ -699,16 +708,18 @@ public class AudioRaytracer : MonoBehaviour
         //high band usually decays faster -> ratio < 1 darkens the tail over time
         ts.targetDecayHFRatio = Mathf.Clamp(rt60High / Mathf.Max(rt60Low, 1e-3f), 0.1f, 2f);
 
-        ts.targetReverbLevel = Mathf.Lerp(-10000f, 0f, Mathf.Clamp01(totalLow * _reverbSensitivity));
+        float invRayCount = 1f / _rayCount;
+
+        ts.targetReverbLevel = Mathf.Lerp(-10000f, 0f, Mathf.Clamp01(totalLow * invRayCount * _reverbSensitivity));
 
         //roomHF attenuates the reverb's treble when little high-frequency energy survives
-        ts.targetRoomHF = Mathf.Lerp(-10000f, 0f, Mathf.Clamp01(totalHigh * _reverbSensitivity));
+        ts.targetRoomHF = Mathf.Lerp(-10000f, 0f, Mathf.Clamp01(totalHigh * invRayCount * _reverbSensitivity));
 
         //early reflections = energy arriving in the first ~20% of the window
         int earlyBins = Mathf.Max(1, _reverbBinCount / 5);
         float earlyEnergy = 0f;
         for (int b = 0; b < earlyBins; b++) earlyEnergy += _echogramLow[b] + _echogramHigh[b];
-        ts.targetReflectionsLevel = Mathf.Lerp(-10000f, 0f, Mathf.Clamp01(earlyEnergy * _reverbSensitivity));
+        ts.targetReflectionsLevel = Mathf.Lerp(-10000f, 0f, Mathf.Clamp01(earlyEnergy * invRayCount * _reverbSensitivity));
     }
 
     //Schroeder backward integration of the echogram
@@ -759,21 +770,24 @@ public class AudioRaytracer : MonoBehaviour
         if (_sources == null || _sources.Count == 0) return;
 
         //ray paths, one fan per source
-        Gizmos.color = Color.cyan;
-        foreach (TracedSource ts in _sources)
-        {
-            if (ts.rayPaths == null) continue;
-            for (int i = 0; i < _rayCount; i++)
+        if (_drawDebugRays) 
+        { 
+            Gizmos.color = Color.cyan;
+            foreach (TracedSource ts in _sources)
             {
-                int offset = i * _pathStride;
-                for (int b = 0; b < _maxBounces; b++)
+                if (ts.rayPaths == null) continue;
+                for (int i = 0; i < _rayCount; i++)
                 {
-                    Vector3 start = ts.rayPaths[offset + b];
-                    Vector3 end = ts.rayPaths[offset + b + 1];
+                    int offset = i * _pathStride;
+                    for (int b = 0; b < _maxBounces; b++)
+                    {
+                        Vector3 start = ts.rayPaths[offset + b];
+                        Vector3 end = ts.rayPaths[offset + b + 1];
 
-                    if (end == Vector3.zero) break;
+                        if (end == Vector3.zero) break;
 
-                    Gizmos.DrawLine(start, end);
+                        Gizmos.DrawLine(start, end);
+                    }
                 }
             }
         }

@@ -2026,7 +2026,7 @@ AudioSource:
   serializedVersion: 4
   OutputAudioMixerGroup: {fileID: 24300002, guid: 19e8b35a6efcb324ba583b19e88a1743, type: 2}
   m_audioClip: {fileID: 0}
-  m_Resource: {fileID: 8300000, guid: 57aee909e9f7f36478198714bc363ee2, type: 3}
+  m_Resource: {fileID: 8300000, guid: f8a51ca200570174bbb16d785ebfe5c4, type: 3}
   m_PlayOnAwake: 1
   m_Volume: 1
   m_Pitch: 1
@@ -6651,7 +6651,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   _computeShader: {fileID: 7200000, guid: 57f7cb633b6436b4888f8bee726bef1e, type: 3}
   _rayCount: 512
-  _maxBounces: 6
+  _maxBounces: 10
   _receiverSensitivity: 4
   _directSensitivity: 1
   _checkInterval: 0.05
@@ -6682,6 +6682,7 @@ MonoBehaviour:
   _occludedCutoff: 700
   _diffractionRange: 12
   _diffractionSteps: 12
+  _drawDebugRays: 0
 --- !u!114 &1715834727
 MonoBehaviour:
   m_ObjectHideFlags: 0
