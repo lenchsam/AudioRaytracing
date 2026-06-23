@@ -6653,8 +6653,8 @@ MonoBehaviour:
   _rayCount: 512
   _maxBounces: 10
   _receiverSensitivity: 4
-  _directSensitivity: 1
-  _checkInterval: 0.05
+  _directSensitivity: 4
+  _checkInterval: 0.1
   _audioSources: []
   _autoFindSources: 1
   _smoothingSpeed: 8
@@ -6667,12 +6667,12 @@ MonoBehaviour:
   _probeRadius: 0.35
   _directPathThreshold: 0.2
   _enableReverb: 1
-  _reverbBinCount: 64
-  _reverbMaxTime: 1.5
+  _reverbBinCount: 128
+  _reverbMaxTime: 3
   _speedOfSound: 343
   _reverbSensitivity: 8
   _reverbSmoothingSpeed: 4
-  _maxDecayTime: 12
+  _maxDecayTime: 5
   _lowAbsorption: 0.9
   _highAbsorption: 0.6
   _enableOcclusionMuffling: 1
