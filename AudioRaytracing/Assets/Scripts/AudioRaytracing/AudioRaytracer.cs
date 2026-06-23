@@ -1,7 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
-using UnityEngine.Rendering;
+
 public class AudioRaytracer : MonoBehaviour
 {
     [SerializeField] private ComputeShader _computeShader;
@@ -33,12 +33,6 @@ public class AudioRaytracer : MonoBehaviour
     private Vector3[] _rayArrivalDirsReadback;
     private Vector2[] _rayEnergyBinsReadback;
     private int[] _raySourceHitsReadback;
-
-    private bool _readbackInFlight;
-    private int _readbackPending;
-    private bool _readbackError;
-    private TracedSource _readbackSource;
-    private int _nextSourceIndex;
 
     [Header("Volume Smoothing")]
     [SerializeField] private float _smoothingSpeed = 8f;
@@ -113,11 +107,6 @@ public class AudioRaytracer : MonoBehaviour
 
         public float lastVisibility;
 
-        public Vector3 traceListenerPos, traceSourcePos, traceToSource;
-        public float traceDist;
-        public float traceDiffractionOpenness;
-        public int lastSourceHitsSum;
-
         //gizmo data
         public Vector3[] rayPaths;
         public readonly bool[] probeBlocked = new bool[5];
@@ -178,11 +167,6 @@ public class AudioRaytracer : MonoBehaviour
     }
     void OnDisable()
     {
-        AsyncGPUReadback.WaitAllRequests();
-        _readbackInFlight = false;
-        _readbackPending = 0;
-        _readbackSource = null;
-
         //release existing buffers
         _cubesBuffer?.Release();
         _cubesBuffer = null;
@@ -226,13 +210,9 @@ public class AudioRaytracer : MonoBehaviour
         _timeSinceLastCheck += Time.deltaTime;
         if (_timeSinceLastCheck >= _checkInterval)
         {
+            for (int i = 0; i < _sources.Count; i++)
+                TraceAcoustics(_sources[i]);
             _timeSinceLastCheck = 0f;
-            if (!_readbackInFlight && _sources.Count > 0)
-            {
-                _nextSourceIndex %= _sources.Count;
-                TraceAcoustics(_sources[_nextSourceIndex]);
-                _nextSourceIndex = (_nextSourceIndex + 1) % _sources.Count;
-            }
         }
 
         //smoothing runs every frame for every source
@@ -381,7 +361,7 @@ public class AudioRaytracer : MonoBehaviour
 
         //calculate geometric diffraction/openness around the corner
         //if propagation muffle is on, we can approximate it using the ratio of rays that hit the source
-        float diffractionOpenness = _propagationMuffle ? Mathf.Clamp01(ts.lastSourceHitsSum / (float)_rayCount * 4f) : ComputeOpenness(listenerPos, sourcePos);
+        float diffractionOpenness = _propagationMuffle ? Mathf.Clamp01((float)System.Linq.Enumerable.Sum(_raySourceHitsReadback) / _rayCount * 4f) : ComputeOpenness(listenerPos, sourcePos);
 
         if (!_enableReverb && ts.lastVisibility > _directPathThreshold)
         {
@@ -418,66 +398,16 @@ public class AudioRaytracer : MonoBehaviour
         _computeShader.Dispatch(_kernelIndex, threadGroups, 1, 1);
 
         //get results back from GPU
-        ts.traceListenerPos = listenerPos;
-        ts.traceSourcePos = sourcePos;
-        ts.traceToSource = toSource;
-        ts.traceDist = dist;
-        ts.traceDiffractionOpenness = diffractionOpenness;
-
-        _readbackError = false;
-        _readbackPending = _enableReverb ? 5 : 4;
-        _readbackInFlight = true;
-
-        RequestReadback(_rayPathBuffer, ts.rayPaths);
-        RequestReadback(_rayVolumesBuffer, _rayVolumesReadback);
-        RequestReadback(_rayArrivalDirsBuffer, _rayArrivalDirsReadback);
-        RequestReadback(_raySourceHitsBuffer, _raySourceHitsReadback);
-
+        _rayPathBuffer.GetData(ts.rayPaths);
+        _rayVolumesBuffer.GetData(_rayVolumesReadback);
+        _rayArrivalDirsBuffer.GetData(_rayArrivalDirsReadback);
+        _raySourceHitsBuffer.GetData(_raySourceHitsReadback);
         if (_enableReverb)
-            RequestReadback(_rayEnergyBinsBuffer, _rayEnergyBinsReadback);
-    }
-
-    void RequestReadback<T>(ComputeBuffer buffer, T[] destination) where T : struct
-    {
-        AsyncGPUReadback.Request(buffer, request =>
-        {
-            if (request.hasError)
-                _readbackError = true;
-            else
-                request.GetData<T>().CopyTo(destination);
-
-            OnReadbackComplete();
-        });
-    }
-
-    void OnReadbackComplete()
-    {
-        if (--_readbackPending > 0)
-            return;
-
-        TracedSource ts = _readbackSource;
-        bool failed = _readbackError;
-
-        _readbackInFlight = false;
-        _readbackSource = null;
-
-        if (!failed && ts != null && ts.source != null)
-            ProcessTracedResults(ts);
-    }
-
-    void ProcessTracedResults(TracedSource ts)
-    {
-        Vector3 listenerPos = ts.traceListenerPos;
-        Vector3 sourcePos = ts.traceSourcePos;
-        Vector3 toSource = ts.traceToSource;
-        float dist = ts.traceDist;
-        float diffractionOpenness = ts.traceDiffractionOpenness;
+            _rayEnergyBinsBuffer.GetData(_rayEnergyBinsReadback);
 
         int sourceHits = 0;
         for (int i = 0; i < _rayCount; i++)
             sourceHits += _raySourceHitsReadback[i];
-        ts.lastSourceHitsSum = sourceHits;
-
         float reflectedRatio = Mathf.Clamp01(sourceHits / (float)_rayCount);
         ts.targetCutoff = ComputeMuffleTarget(ts, listenerPos, sourcePos, reflectedRatio);
 
@@ -521,6 +451,7 @@ public class AudioRaytracer : MonoBehaviour
         if (_enableReverb)
             UpdateReverb(ts);
     }
+
     Vector3 ComputeArrivalDirection(Vector3 fallback)
     {
         if (_enableReverb && _rayEnergyBinsReadback != null)
