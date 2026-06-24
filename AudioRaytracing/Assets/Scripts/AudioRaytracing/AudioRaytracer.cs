@@ -71,6 +71,7 @@ public class AudioRaytracer : MonoBehaviour
     [SerializeField] private float _occludedCutoff = 700f;   //deep in the acoustic shadow
     [SerializeField] private float _diffractionRange = 3f;   //metres of sidestep before fully muffled, only used for the probe
     [SerializeField] private int _diffractionSteps = 6;      //shadow-depth search resolution, only used for the probe
+    [SerializeField, Range(0f, 1f)] private float _wallTransmission = 0.1f;
 
     [Header("Debug")]
     [SerializeField] private bool _drawDebugRays = false;
@@ -447,8 +448,10 @@ public class AudioRaytracer : MonoBehaviour
 
         float effectiveVisibility = Mathf.Max(ts.lastVisibility, diffractionOpenness * 0.35f);
 
-        //combine indirect reflections with our diffracted direct path
-        ts.targetVolume = Mathf.Clamp01(raytracedVolume + (directVolume * effectiveVisibility));
+        float transmittedVolume = directVolume * _wallTransmission * (1f - effectiveVisibility);
+
+        //combine indirect reflections with our diffracted direct path and the muffled wall leakage
+        ts.targetVolume = Mathf.Clamp01(raytracedVolume + (directVolume * effectiveVisibility) + transmittedVolume);
 
         //directional positioning ---
         Vector3 trueDir = (toSource.sqrMagnitude > 1e-8f) ? toSource.normalized : ts.currentApparentDir;
