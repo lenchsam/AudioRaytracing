@@ -65,13 +65,20 @@ public class AudioRaytracer : MonoBehaviour
 
     [Header("Occlusion Muffling")]
     [SerializeField] private bool _enableOcclusionMuffling = true;
-    [SerializeField] private bool _propagationMuffle = true; //derive muffle from the traced shadow rays instead of the sidestep probe
-    [SerializeField] private float _muffleInterpolation = 6f; //log-frequency cutoff smoothing speed
-    [SerializeField] private float _openCutoff = 22000f;     //clear line of sight
-    [SerializeField] private float _occludedCutoff = 700f;   //deep in the acoustic shadow
-    [SerializeField] private float _diffractionRange = 3f;   //metres of sidestep before fully muffled, only used for the probe
-    [SerializeField] private int _diffractionSteps = 6;      //shadow-depth search resolution, only used for the probe
+    [SerializeField] private bool _propagationMuffle = true;    //derive muffle from the traced shadow rays instead of the sidestep probe
+    [SerializeField] private float _muffleInterpolation = 6f;   //log-frequency cutoff smoothing speed
+    [SerializeField] private float _openCutoff = 22000f;        //clear line of sight
+    [SerializeField] private float _occludedCutoff = 700f;      //deep in the acoustic shadow
+    [SerializeField] private float _diffractionRange = 3f;      //metres of sidestep before fully muffled, only used for the probe
+    [SerializeField] private int _diffractionSteps = 6;         //shadow-depth search resolution, only used for the probe
     [SerializeField, Range(0f, 1f)] private float _wallTransmission = 0.1f;
+
+    [Header("Dynamic Geometry")]
+    [SerializeField] private bool _autoUpdateGeometry = true;
+    [SerializeField] private float _geometryMoveThreshold = 0.001f;
+
+    private BoxCollider[] _trackedColliders;
+    private Cube[] _cubes;
 
     [Header("Debug")]
     [SerializeField] private bool _drawDebugRays = false;
@@ -105,8 +112,8 @@ public class AudioRaytracer : MonoBehaviour
         public float currentReverbLevel = -10000f, targetReverbLevel = -10000f;
         public float currentRoomHF = 0f, targetRoomHF = 0f;
         public float currentReflectionsLevel = -10000f, targetReflectionsLevel = -10000f;
-        public float currentReflectionsDelay, targetReflectionsDelay;
-        public float currentReverbDelay, targetReverbDelay;
+        public float currentReflectionsDelay = 0.02f, targetReflectionsDelay = 0.02f;
+        public float currentReverbDelay = 0.01f, targetReverbDelay = 0.01f;
         public float currentCutoff = 22000f, targetCutoff = 22000f;
 
         public float lastVisibility;
@@ -214,6 +221,9 @@ public class AudioRaytracer : MonoBehaviour
         _timeSinceLastCheck += Time.deltaTime;
         if (_timeSinceLastCheck >= _checkInterval)
         {
+            if (_autoUpdateGeometry)
+                RefreshCubeBuffer();
+
             for (int i = 0; i < _sources.Count; i++)
                 TraceAcoustics(_sources[i]);
             _timeSinceLastCheck = 0f;
@@ -329,22 +339,55 @@ public class AudioRaytracer : MonoBehaviour
     //needs to be called when geometry changes during runtime
     public void RebuildCubeBuffer()
     {
-        BoxCollider[] colliders = FindObjectsOfType<BoxCollider>();
+        _trackedColliders = FindObjectsOfType<BoxCollider>().Where(bc => bc.enabled).ToArray();
 
-        Cube[] cubes = colliders
-               .Where(bc => bc.enabled)
-               .Select(bc => new Cube { min = bc.bounds.min, max = bc.bounds.max })
-               .ToArray();
+        _cubes = _trackedColliders.Select(bc => new Cube { min = bc.bounds.min, max = bc.bounds.max }).ToArray();
 
         //compute buffers complain when they have 0 elements
-        if (cubes.Length == 0)
-            cubes = new[] { new Cube { min = Vector3.zero, max = Vector3.zero } };
+        if (_cubes.Length == 0)
+            _cubes = new[] { new Cube { min = Vector3.zero, max = Vector3.zero } };
 
-        _cubesBuffer?.Release();
-        _cubesBuffer = new ComputeBuffer(cubes.Length, sizeof(float) * 6); // 2 x float3
-        _cubesBuffer.SetData(cubes);
+        //only reallocate when the count changes, otherwise reuse the existing buffer
+        if (_cubesBuffer == null || _cubesBuffer.count != _cubes.Length)
+        {
+            _cubesBuffer?.Release();
+            _cubesBuffer = new ComputeBuffer(_cubes.Length, sizeof(float) * 6); // 2 x float3
+        }
+        _cubesBuffer.SetData(_cubes);
     }
 
+    void RefreshCubeBuffer()
+    {
+        if (_trackedColliders == null || _cubesBuffer == null) return;
+
+        float threshold = _geometryMoveThreshold * _geometryMoveThreshold;
+        bool changed = false;
+
+        for (int i = 0; i < _trackedColliders.Length; i++)
+        {
+            BoxCollider bc = _trackedColliders[i];
+
+            //a collider was destroyed or disabled -> topology changed, do a full rescan
+            if (bc == null || !bc.enabled)
+            {
+                RebuildCubeBuffer();
+                return;
+            }
+
+            Bounds b = bc.bounds;
+            Cube cube = _cubes[i];
+            if ((cube.min - b.min).sqrMagnitude > threshold ||
+                (cube.max - b.max).sqrMagnitude > threshold)
+            {
+                _cubes[i] = new Cube { min = b.min, max = b.max };
+                changed = true;
+            }
+        }
+
+        if (changed)
+            _cubesBuffer.SetData(_cubes);
+
+    }
     //run compute shader for a single source and get back results
     void TraceAcoustics(TracedSource ts)
     {
@@ -546,12 +589,16 @@ public class AudioRaytracer : MonoBehaviour
             ts.currentReverbLevel = Mathf.Lerp(ts.currentReverbLevel, ts.targetReverbLevel, k);
             ts.currentRoomHF = Mathf.Lerp(ts.currentRoomHF, ts.targetRoomHF, k);
             ts.currentReflectionsLevel = Mathf.Lerp(ts.currentReflectionsLevel, ts.targetReflectionsLevel, k);
+            ts.currentReflectionsDelay = Mathf.Lerp(ts.currentReflectionsDelay, ts.targetReflectionsDelay, k);
+            ts.currentReverbDelay = Mathf.Lerp(ts.currentReverbDelay, ts.targetReverbDelay, k);
 
             ts.reverbFilter.decayTime = ts.currentDecayTime;
             ts.reverbFilter.decayHFRatio = ts.currentDecayHFRatio;
             ts.reverbFilter.reverbLevel = ts.currentReverbLevel;
             ts.reverbFilter.roomHF = ts.currentRoomHF;
             ts.reverbFilter.reflectionsLevel = ts.currentReflectionsLevel;
+            ts.reverbFilter.reflectionsDelay = ts.currentReflectionsDelay;
+            ts.reverbFilter.reverbDelay = ts.currentReverbDelay;
             ts.reverbFilter.dryLevel = 0f;
         }
 
@@ -682,11 +729,14 @@ public class AudioRaytracer : MonoBehaviour
 
         float totalLow = 0f, totalHigh = 0f;
         int firstBin = -1;
+        float weightedTime = 0f;
         for (int b = 0; b < _reverbBinCount; b++)
         {
+            float binEnergy = _echogramLow[b] + _echogramHigh[b];
             totalLow += _echogramLow[b];
             totalHigh += _echogramHigh[b];
-            if (firstBin < 0 && (_echogramLow[b] + _echogramHigh[b]) > 0f)
+            weightedTime += binEnergy * (b * _binDuration);
+            if (firstBin < 0 && binEnergy > 0f)
                 firstBin = b;
         }
 
@@ -700,8 +750,14 @@ public class AudioRaytracer : MonoBehaviour
             ts.targetRoomHF = 0f;
             ts.targetDecayTime = 0.1f;
             ts.targetDecayHFRatio = 1f;
+            ts.targetReflectionsDelay = 0.3f;
+            ts.targetReverbDelay = 0.1f;
             return;
         }
+
+        float directTime = Mathf.Max(ts.apparentDistance, 0f) / Mathf.Max(_speedOfSound, 1f);
+        float firstReflTime = Mathf.Max(0, firstBin) * _binDuration;
+        float centroidTime = weightedTime / totalAll;
 
         float rt60Low = (totalLow > 1e-9f) ? EstimateRT60(_echogramLow, totalLow) : 0.1f;
         float rt60High = (totalHigh > 1e-9f) ? EstimateRT60(_echogramHigh, totalHigh) : 0.1f;
@@ -733,6 +789,8 @@ public class AudioRaytracer : MonoBehaviour
         float prevT = 0f;
         float t5 = -1f;
         float t25 = -1f;
+        float lastDb = 0f;
+        float lastT = 0f;
 
         for (int b = 0; b < _reverbBinCount; b++)
         {
@@ -749,14 +807,21 @@ public class AudioRaytracer : MonoBehaviour
 
             prevDb = db;
             prevT = t;
+            lastDb = db;
+            lastT = t;
             running -= echo[b];
         }
 
         if (t5 >= 0f && t25 > t5)
             return 3f * (t25 - t5);     //T20 extrapolated to a full 60 dB drop
 
-        //decay never reached -25 dB inside the window -> reverb is at least this long
-        return _reverbMaxTime;
+        if (t5 >= 0f && lastT > t5 && lastDb < -5f)
+        {
+            float slope = (lastDb + 5f) / (lastT - t5);     //dB per second, negative
+            if (slope < -1e-3f)
+                return Mathf.Clamp(-60f / slope, _reverbMaxTime, _maxDecayTime);
+        }
+        return _maxDecayTime;
     }
 
     //linearly interpolate the time at which the dB curve crosses a target level
