@@ -37,7 +37,6 @@ public class GameManager : MonoBehaviour
 
     private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
     {
-        Debug.Log("Scene loaded: " + scene.name);
         GameObject.Find("Player").GetComponent<AudioRaytracer>().enabled = m_isAudioRaytraced;
     }
 }
