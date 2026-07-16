@@ -87,7 +87,7 @@ public class AudioRaytracer : MonoBehaviour
     [SerializeField] private float _muffleInterpolation = 6f;   //log-frequency cutoff smoothing speed
     [SerializeField] private float _openCutoff = 22000f;        //clear line of sight
     [SerializeField] private float _occludedCutoff = 700f;      //deep in the acoustic shadow
-    [SerializeField] private float _diffractionRange = 3f;      //metres of sidestep before fully muffled, only used for the probe
+    [SerializeField] private float _diffractionRange = 3f;      //metres of detour around an edge (or probe sidestep) before fully muffled
     [SerializeField] private int _diffractionSteps = 6;         //shadow-depth search resolution, only used for the probe
     [SerializeField, Range(0f, 1f)] private float _wallTransmission = 0.1f;
 
@@ -109,8 +109,18 @@ public class AudioRaytracer : MonoBehaviour
     private const string EmitterPrefix = "[AR]";
     private const string EmitterName = "[AR] SpatialEmitter";
 
-    //irregular spacing multipliers so the staggered copies never form a periodic comb which rings metallically like a flutter echo between parallel walls
+    //irregular spacing multipliers so the staggered copies never form a periodic comb,
+    //which rings metallically like a flutter echo between parallel walls
     private static readonly float[] StaggerPattern = { 0.7f, 1.6f, 2.4f, 4.1f, 5.3f, 6.1f, 7.6f, 8.7f, 9.7f, 11.3f, 12.7f, 14.1f };
+
+    //corner index pairs forming the 12 edges of a box (corner bit 0 = x, bit 1 = y, bit 2 = z)
+    private static readonly int[] CubeEdgePairs =
+    {
+        0,1, 2,3, 4,5, 6,7,   //x aligned
+        0,2, 1,3, 4,6, 5,7,   //y aligned
+        0,4, 1,5, 2,6, 3,7    //z aligned
+    };
+    private readonly Vector3[] _cubeCorners = new Vector3[8];
 
     private readonly List<TracedSource> _sources = new List<TracedSource>();
 
@@ -152,6 +162,11 @@ public class AudioRaytracer : MonoBehaviour
         public float currentCutoff = 22000f, targetCutoff = 22000f;
 
         public float lastVisibility;
+
+        //edge diffraction
+        //the point the sound bends around when occluded
+        public bool hasBend;
+        public Vector3 bendPoint;
 
         //gizmo data
         public Vector3[] rayPaths;
@@ -612,6 +627,7 @@ public class AudioRaytracer : MonoBehaviour
 
         if (!_enableReverb && !useReflEmitters && ts.lastVisibility > _directPathThreshold)
         {
+            ts.hasBend = false;
             float directVolumeOnly = Mathf.Clamp01(_directSensitivity / (dist + 1e-3f) * ts.lastVisibility);
             ts.targetVolume = directVolumeOnly;
             ts.targetApparentDir = (toSource.sqrMagnitude > 1e-8f) ? toSource.normalized : ts.currentApparentDir;
@@ -663,11 +679,28 @@ public class AudioRaytracer : MonoBehaviour
         for (int i = 0; i < _rayCount; i++)
             sourceHits += _raySourceHitsReadback[i];
         float reflectedRatio = Mathf.Clamp01(sourceHits / (float)_rayCount);
-        ts.targetCutoff = ComputeMuffleTarget(ts, listenerPos, sourcePos, reflectedRatio);
 
-        //geometric diffraction around the corner
-        //approximate propagation muffle from the ratio of this sources rays that reached it
-        float diffractionOpenness = _propagationMuffle ? Mathf.Clamp01(reflectedRatio * 4f) : ComputeOpenness(listenerPos, sourcePos);
+        //edge diffraction: shortest first-order path around whatever blocks the direct line
+        ts.hasBend = false;
+        float detourOpenness = 0f;
+        float bendPathLen = dist;
+        if (ts.lastVisibility < 0.999f && FindDiffractionPath(listenerPos, sourcePos, out Vector3 bend, out float bendLen))
+        {
+            ts.hasBend = true;
+            ts.bendPoint = bend;
+            bendPathLen = bendLen;
+            float detour = Mathf.Max(0f, bendLen - dist);
+            detourOpenness = Mathf.Clamp01(1f - detour / Mathf.Max(_diffractionRange, 0.01f));
+        }
+
+        //with a real bend path the shadow depth drives the muffle
+        //otherwise fall back to the ratio of this source's rays that reached it
+        ts.targetCutoff = ComputeMuffleTarget(ts, listenerPos, sourcePos, ts.hasBend ? detourOpenness : reflectedRatio);
+
+        //heuristic openness only backs up the cases where no bend path exists
+        float heuristicOpenness = 0f;
+        if (!ts.hasBend)
+            heuristicOpenness = _propagationMuffle ? Mathf.Clamp01(reflectedRatio * 4f) : ComputeOpenness(listenerPos, sourcePos);
 
         if (useReflEmitters)
             UpdateReflectionEmitters(ts, dist);
@@ -697,21 +730,28 @@ public class AudioRaytracer : MonoBehaviour
         //direct and diffracted volume
         float directVolume = Mathf.Clamp01(_directSensitivity / (dist + 1e-3f));
 
-        float effectiveVisibility = Mathf.Max(ts.lastVisibility, diffractionOpenness * 0.35f);
+        float effectiveVisibility = ts.hasBend ? ts.lastVisibility : Mathf.Max(ts.lastVisibility, heuristicOpenness * 0.35f);
 
-        float transmittedVolume = directVolume * _wallTransmission * (1f - effectiveVisibility);
+        //sound bending around the edge
+        //attenuated by the longer path and by how deep
+        //into the acoustic shadow the listener stands
+        float diffractedVolume = ts.hasBend ? Mathf.Clamp01(_directSensitivity / (bendPathLen + 1e-3f)) * detourOpenness * (1f - ts.lastVisibility) : 0f;
 
-        //combine indirect reflections with diffracted direct path and the muffled wall leakage
+        float transmittedVolume = directVolume * _wallTransmission * (1f - Mathf.Max(effectiveVisibility, detourOpenness));
+
+        //combine indirect reflections with the direct, diffracted and transmitted paths
         //when the reflection emitters are active they carry the reflected energy themselves
         float indirectVolume = useReflEmitters ? 0f : raytracedVolume;
-        ts.targetVolume = Mathf.Clamp01(indirectVolume + (directVolume * effectiveVisibility) + transmittedVolume);
+        ts.targetVolume = Mathf.Clamp01(indirectVolume + (directVolume * effectiveVisibility) + diffractedVolume + transmittedVolume);
 
         //directional positioning
         Vector3 trueDir = (toSource.sqrMagnitude > 1e-8f) ? toSource.normalized : ts.currentApparentDir;
         Vector3 reflectedDir = ComputeArrivalDirection(trueDir);
 
-        ts.targetApparentDir = Vector3.Slerp(reflectedDir, trueDir, Mathf.Clamp01(effectiveVisibility)).normalized;
-        ts.apparentDistance = dist;
+        //an occluded source is heard from its bend point (the doorway), not through the wall
+        Vector3 occludedDir = ts.hasBend ? (ts.bendPoint - listenerPos).normalized : reflectedDir;
+        ts.targetApparentDir = Vector3.Slerp(occludedDir, trueDir, Mathf.Clamp01(effectiveVisibility)).normalized;
+        ts.apparentDistance = Mathf.Lerp(ts.hasBend ? bendPathLen : dist, dist, Mathf.Clamp01(effectiveVisibility));
 
         if (_enableReverb)
             UpdateReverb(ts);
@@ -1047,14 +1087,120 @@ public class AudioRaytracer : MonoBehaviour
         return Mathf.Clamp01(1f - bestClear / range);
     }
 
-    float ComputeMuffleTarget(TracedSource ts, Vector3 listenerPos, Vector3 sourcePos, float reflectedRatio)
+    float ComputeMuffleTarget(TracedSource ts, Vector3 listenerPos, Vector3 sourcePos, float pathOpenness)
     {
         if (_propagationMuffle)
         {
-            float openness = Mathf.Max(ts.lastVisibility, reflectedRatio);
+            float openness = Mathf.Max(ts.lastVisibility, pathOpenness);
             return MuffleCutoffFromOpenness(openness);
         }
         return MuffleCutoffFromOpenness(ComputeOpenness(listenerPos, sourcePos));
+    }
+
+    //shortest first order bend around the edges of whatever blocks the direct line
+    //this is what makes an occluded source sound like it comes from the doorway
+    bool FindDiffractionPath(Vector3 listenerPos, Vector3 sourcePos, out Vector3 bendPoint, out float pathLength)
+    {
+        bendPoint = Vector3.zero;
+        pathLength = float.MaxValue;
+        bool found = false;
+
+        if (_cubes == null) return false;
+
+        Vector3 toSource = sourcePos - listenerPos;
+        float directDist = toSource.magnitude;
+        if (directDist < 1e-4f) return false;
+        Vector3 dir = toSource / directDist;
+
+        for (int c = 0; c < _cubes.Length; c++)
+        {
+            //only the boxes actually blocking the direct line diffract it
+            if (!RayHitsCube(_cubes[c], listenerPos, dir, directDist)) continue;
+
+            FillCubeCorners(_cubes[c]);
+            for (int e = 0; e < CubeEdgePairs.Length; e += 2)
+            {
+                Vector3 a = _cubeCorners[CubeEdgePairs[e]];
+                Vector3 b = _cubeCorners[CubeEdgePairs[e + 1]];
+
+                Vector3 p = ShortestBendOnEdge(listenerPos, sourcePos, a, b);
+
+                //nudge the bend point off the surface so the validation rays dont hit the box
+                p += (p - _cubes[c].center).normalized * 0.02f;
+
+                float len = Vector3.Distance(listenerPos, p) + Vector3.Distance(p, sourcePos);
+                if (len >= pathLength) continue;
+
+                if (Physics.Linecast(listenerPos, p, _occlusionMask, QueryTriggerInteraction.Ignore)) continue;
+                if (Physics.Linecast(p, sourcePos, _occlusionMask, QueryTriggerInteraction.Ignore)) continue;
+
+                pathLength = len;
+                bendPoint = p;
+                found = true;
+            }
+        }
+        return found;
+    }
+
+    static Vector3 ShortestBendOnEdge(Vector3 listenerPos, Vector3 sourcePos, Vector3 a, Vector3 b)
+    {
+        float lo = 0f, hi = 1f;
+        for (int i = 0; i < 24; i++)
+        {
+            float t1 = Mathf.Lerp(lo, hi, 1f / 3f);
+            float t2 = Mathf.Lerp(lo, hi, 2f / 3f);
+            if (BendLength(listenerPos, sourcePos, a, b, t1) < BendLength(listenerPos, sourcePos, a, b, t2))
+                hi = t2;
+            else
+                lo = t1;
+        }
+        return Vector3.Lerp(a, b, 0.5f * (lo + hi));
+    }
+
+    static float BendLength(Vector3 listenerPos, Vector3 sourcePos, Vector3 a, Vector3 b, float t)
+    {
+        Vector3 p = Vector3.Lerp(a, b, t);
+        return Vector3.Distance(listenerPos, p) + Vector3.Distance(p, sourcePos);
+    }
+
+    //CPU twin of the shaders oriented box slab test
+    static bool RayHitsCube(Cube c, Vector3 origin, Vector3 dir, float maxDist)
+    {
+        Vector3 rel = origin - c.center;
+        Vector3 localOrigin = new Vector3(Vector3.Dot(rel, c.axisX), Vector3.Dot(rel, c.axisY), Vector3.Dot(rel, c.axisZ));
+        Vector3 localDir = new Vector3(Vector3.Dot(dir, c.axisX), Vector3.Dot(dir, c.axisY), Vector3.Dot(dir, c.axisZ));
+
+        float tNear = float.MinValue, tFar = float.MaxValue;
+        for (int i = 0; i < 3; i++)
+        {
+            float o = localOrigin[i], d = localDir[i], h = c.halfExtents[i];
+            if (Mathf.Abs(d) < 1e-9f)
+            {
+                if (Mathf.Abs(o) > h) return false;
+                continue;
+            }
+            float t1 = (-h - o) / d;
+            float t2 = (h - o) / d;
+            if (t1 > t2) { float tmp = t1; t1 = t2; t2 = tmp; }
+            tNear = Mathf.Max(tNear, t1);
+            tFar = Mathf.Min(tFar, t2);
+        }
+        return tNear <= tFar && tFar > 0f && tNear < maxDist - 0.01f;
+    }
+
+    void FillCubeCorners(Cube c)
+    {
+        Vector3 ax = c.axisX * c.halfExtents.x;
+        Vector3 ay = c.axisY * c.halfExtents.y;
+        Vector3 az = c.axisZ * c.halfExtents.z;
+        for (int i = 0; i < 8; i++)
+        {
+            Vector3 p = c.center;
+            p += ((i & 1) == 0) ? -ax : ax;
+            p += ((i & 2) == 0) ? -ay : ay;
+            p += ((i & 4) == 0) ? -az : az;
+            _cubeCorners[i] = p;
+        }
     }
 
     float MuffleCutoffFromOpenness(float openness)
@@ -1120,7 +1266,9 @@ public class AudioRaytracer : MonoBehaviour
         //high band usually decays faster -> ratio < 1 darkens the tail over time
         ts.targetDecayHFRatio = Mathf.Clamp(rt60High / Mathf.Max(rt60Low, 1e-3f), 0.1f, 2f);
 
-        //how long after the direct sound the first reflection lands and how far behind that the bulk of the reverberant energy arrives
+        //room size cues
+        //how long after the direct sound the first reflection lands
+        //and how far behind that the bulk of the reverberant energy arrives
         ts.targetReflectionsDelay = Mathf.Clamp(firstReflTime - directTime, 0f, 0.3f);
         ts.targetReverbDelay = Mathf.Clamp(centroidTime - firstReflTime, 0f, 0.1f);
 
@@ -1254,6 +1402,15 @@ public class AudioRaytracer : MonoBehaviour
         {
             if (ts.source == null) continue;
             Gizmos.DrawLine(Listener.position, ts.source.transform.position);
+        }
+
+        Gizmos.color = Color.yellow;
+        foreach (TracedSource ts in _sources)
+        {
+            if (!ts.hasBend || ts.anchorTransform == null) continue;
+            Gizmos.DrawLine(Listener.position, ts.bendPoint);
+            Gizmos.DrawLine(ts.bendPoint, ts.anchorTransform.position);
+            Gizmos.DrawWireSphere(ts.bendPoint, 0.08f);
         }
     }
 }
