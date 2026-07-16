@@ -47,7 +47,7 @@ public class Button : MonoBehaviour
 
         if (Physics.Raycast(ray, out RaycastHit hit) && hit.collider.gameObject == m_button)
         {
-            switch(m_buttonType)
+            switch (m_buttonType)
             {
                 case ButtonType.ToggleEnvironment:
                     ToggleEnvironment();
@@ -68,8 +68,7 @@ public class Button : MonoBehaviour
     {
         AudioClip currentAudioClip = m_audioClip[m_audioClipIndex];
 
-        m_audioSource.transform.GetChild(0).GetComponent<AudioSource>().clip = currentAudioClip;
-        m_audioSource.transform.GetChild(0).GetComponent<AudioSource>().Play();
+        m_audioRaytracer.SetSourceClip(m_audioSource, currentAudioClip);
         m_audioClipIndex = (m_audioClipIndex + 1) % m_audioClip.Length;
     }
 }

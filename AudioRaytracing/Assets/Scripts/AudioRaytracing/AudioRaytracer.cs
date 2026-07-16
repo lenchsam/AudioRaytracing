@@ -35,7 +35,7 @@ public class AudioRaytracer : MonoBehaviour
     private int[] _raySourceHitsReadback;
 
     private Vector3[] _rayDirections;
-    private Vector3[] _reflectionDirs;
+    private Vector3[] _reflectionDirs;    //direction-bucket centres, one per reflection emitter
     private float[] _bucketLow, _bucketHigh, _bucketTime;
     private Vector3[] _bucketDir;
 
@@ -48,12 +48,12 @@ public class AudioRaytracer : MonoBehaviour
     [SerializeField] private Transform _listener;
 
     [Header("Early Reflections")]
-    [SerializeField] private bool _enableReflectionEmitters = true;
+    [SerializeField] private bool _enableReflectionEmitters = true;     //needs directional rendering
     [SerializeField] private int _reflectionEmitterCount = 6;
-    [SerializeField] private float _earlyWindow = 0.08f;
+    [SerializeField] private float _earlyWindow = 0.08f;                //seconds after the first arrival treated as early reflections
     [SerializeField] private float _reflectionSensitivity = 12f;
-    [SerializeField] private float _reflectionStagger = 0.007f;
-    [SerializeField] private float _reflectionMinCutoff = 4000f;
+    [SerializeField] private float _reflectionStagger = 0.007f;         //seconds each copy trails the previous one; kills comb-filtering between the sample-locked copies
+    [SerializeField] private float _reflectionMinCutoff = 4000f;        //darkest a reflection emitter can get, keeps their tone close to the dry signal
 
     [Header("Line of Sight")]
     [SerializeField] private LayerMask _occlusionMask = ~0;
@@ -77,8 +77,8 @@ public class AudioRaytracer : MonoBehaviour
     [SerializeField, Range(0f, 1f)] private float _highAbsorption = 0.6f;  //treble is absorbed faster
 
     [Header("Surfaces & Air")]
-    [SerializeField, Range(0f, 1f)] private float _scattering = 0.4f;
-    [SerializeField] private float _airAbsorptionLow = 0.0002f;
+    [SerializeField, Range(0f, 1f)] private float _scattering = 0.4f;      //0 = mirror walls, 1 = fully diffuse
+    [SerializeField] private float _airAbsorptionLow = 0.0002f;            //energy lost to the air per metre travelled
     [SerializeField] private float _airAbsorptionHigh = 0.008f;
 
     [Header("Occlusion Muffling")]
@@ -444,34 +444,55 @@ public class AudioRaytracer : MonoBehaviour
 
     void PlaySynced(TracedSource ts, int timeSamples)
     {
-        StartEmitter(ts.source, timeSamples);
-        StartEmitter(ts.wetSource, timeSamples);
+        double startTime = AudioSettings.dspTime + 0.1;
+
+        Schedule(ts.source, timeSamples, startTime);
+        Schedule(ts.wetSource, timeSamples, startTime);
         if (ts.reflEmitters != null)
         {
             for (int i = 0; i < ts.reflEmitters.Length; i++)
             {
-                AudioSource refl = ts.reflEmitters[i];
-                if (refl == null) continue;
-
                 float delay = _reflectionStagger * StaggerPattern[i % StaggerPattern.Length]
                               * (1 + i / StaggerPattern.Length);
-                int offset = (refl.clip != null) ? Mathf.RoundToInt(delay * refl.clip.frequency) : 0;
-                StartEmitter(refl, timeSamples - offset);
+                Schedule(ts.reflEmitters[i], timeSamples, startTime + delay);
             }
         }
     }
 
-    static void StartEmitter(AudioSource src, int timeSamples)
+    static void Schedule(AudioSource src, int timeSamples, double dspTime)
     {
         if (src == null) return;
-        if (src.clip != null)
+        src.Stop();
+        if (src.clip == null) return;
+        src.timeSamples = Mathf.Clamp(timeSamples, 0, src.clip.samples - 1);
+        src.PlayScheduled(dspTime);
+    }
+
+    public void SetSourceClip(AudioSource original, AudioClip clip, bool play = true)
+    {
+        foreach (TracedSource ts in _sources)
         {
-            int samples = src.clip.samples;
-            if (src.loop)
-                timeSamples = ((timeSamples % samples) + samples) % samples;  //wrap negative offsets
-            src.timeSamples = Mathf.Clamp(timeSamples, 0, samples - 1);
+            if (ts.originalSource != original && ts.source != original) continue;
+
+            //keep the disabled original in step so a raytracer re-enable picks up the right clip
+            if (ts.originalSource != null) ts.originalSource.clip = clip;
+
+            if (ts.source != null) ts.source.clip = clip;
+            if (ts.wetSource != null) ts.wetSource.clip = clip;
+            if (ts.reflEmitters != null)
+                foreach (AudioSource refl in ts.reflEmitters)
+                    if (refl != null) refl.clip = clip;
+
+            if (play)
+                PlaySynced(ts, 0);
+            return;
         }
-        src.Play();
+
+        if (original != null)
+        {
+            original.clip = clip;
+            if (play) original.Play();
+        }
     }
 
     public void RegisterSource(AudioSource src)

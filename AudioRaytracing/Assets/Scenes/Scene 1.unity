@@ -10290,6 +10290,10 @@ PrefabInstance:
       propertyPath: m_Enabled
       value: 1
       objectReference: {fileID: 0}
+    - target: {fileID: 7495396913270105892, guid: 71a297b80e87ee844999f2e29bbf067e, type: 3}
+      propertyPath: _enableReflectionEmitters
+      value: 1
+      objectReference: {fileID: 0}
     m_RemovedComponents: []
     m_RemovedGameObjects: []
     m_AddedGameObjects: []
