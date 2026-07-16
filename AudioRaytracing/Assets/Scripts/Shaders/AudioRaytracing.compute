@@ -2,8 +2,11 @@
 
 struct Cube
 {
-    float3 min;
-    float3 max;
+    float3 center;
+    float3 halfExtents;
+    float3 axisX;
+    float3 axisY;
+    float3 axisZ;
 };
 
 StructuredBuffer<Cube> _Cubes;
@@ -37,12 +40,18 @@ float3 Hash33(float3 p)
     return frac((p.xxy + p.yxx) * p.zyx) * 2.0 - 1.0;
 }
 
-float IntersectBox(float3 origin, float3 dir, float3 boxMin, float3 boxMax, out float3 outNormal)
+float IntersectBox(float3 origin, float3 dir, Cube box, out float3 outNormal)
 {
     outNormal = float3(0, 1, 0);
-    float3 invDir = 1.0 / dir;
-    float3 t1 = (boxMin - origin) * invDir;
-    float3 t2 = (boxMax - origin) * invDir;
+    
+    //transform the ray into the box's local frame so rotated boxes stay boxes
+    float3 rel = origin - box.center;
+    float3 localOrigin = float3(dot(rel, box.axisX), dot(rel, box.axisY), dot(rel, box.axisZ));
+    float3 localDir = float3(dot(dir, box.axisX), dot(dir, box.axisY), dot(dir, box.axisZ));
+    
+    float3 invDir = 1.0 / localDir;
+    float3 t1 = (-box.halfExtents - localOrigin) * invDir;
+    float3 t2 = (box.halfExtents - localOrigin) * invDir;
     float3 tMin = min(t1, t2);
     float3 tMax = max(t1, t2);
     float tNear = max(max(tMin.x, tMin.y), tMin.z);
@@ -53,19 +62,18 @@ float IntersectBox(float3 origin, float3 dir, float3 boxMin, float3 boxMax, out 
     if (tNear <= 0.001)
         tNear = tFar;
 
-    float3 hitPoint = origin + dir * tNear;
-    float3 center = (boxMin + boxMax) * 0.5;
-    float3 halfSize = (boxMax - boxMin) * 0.5;
-    float3 localP = hitPoint - center;
-    float3 d = abs(localP / halfSize);
+    float3 localP = localOrigin + localDir * tNear;
+    float3 d = abs(localP / box.halfExtents);
+    float3 localNormal;
 
     if (d.x >= d.y && d.x >= d.z)
-        outNormal = float3(sign(localP.x), 0, 0);
+        localNormal = float3(sign(localP.x), 0, 0);
     else if (d.y >= d.z)
-        outNormal = float3(0, sign(localP.y), 0);
+        localNormal = float3(0, sign(localP.y), 0);
     else
-        outNormal = float3(0, 0, sign(localP.z));
+        localNormal = float3(0, 0, sign(localP.z));
 
+    outNormal = localNormal.x * box.axisX + localNormal.y * box.axisY + localNormal.z * box.axisZ;
     return tNear;
 }
 
@@ -105,7 +113,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     for (int c = 0; c < _CubeCount; c++)
     {
         float3 dummyN;
-        if (IntersectBox(origin, directDir, _Cubes[c].min, _Cubes[c].max, dummyN) < directDist - 0.01)
+        if (IntersectBox(origin, directDir, _Cubes[c], dummyN) < directDist - 0.01)
         {
             directOccluded = true;
             break;
@@ -127,7 +135,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         for (int c = 0; c < _CubeCount; c++)
         {
             float3 n;
-            float t = IntersectBox(origin, dir, _Cubes[c].min, _Cubes[c].max, n);
+            float t = IntersectBox(origin, dir, _Cubes[c], n);
             if (t < closestT)
             {
                 closestT = t;
@@ -157,7 +165,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
             for (int sc = 0; sc < _CubeCount; sc++)
             {
                 float3 dummy;
-                if (IntersectBox(hitPoint + hitNormal * 0.01, shadowDir, _Cubes[sc].min, _Cubes[sc].max, dummy) < distToSource - 0.01)
+                if (IntersectBox(hitPoint + hitNormal * 0.01, shadowDir, _Cubes[sc], dummy) < distToSource - 0.01)
                 {
                     occluded = true;
                     break;
