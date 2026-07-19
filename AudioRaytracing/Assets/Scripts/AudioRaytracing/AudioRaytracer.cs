@@ -152,6 +152,9 @@ public class AudioRaytracer : MonoBehaviour
 
         public float currentVolume, targetVolume;
 
+        //shared listener distance attenuation so the wet tail and the reflection emitters fade with the dry signal instead of sitting at full level
+        public float distanceRolloff = 1f;
+
         public float currentDecayTime = 0.1f, targetDecayTime = 0.1f;
         public float currentDecayHFRatio = 1f, targetDecayHFRatio = 1f;
         public float currentReverbLevel = -10000f, targetReverbLevel = -10000f;
@@ -346,6 +349,7 @@ public class AudioRaytracer : MonoBehaviour
 
         emitter.spatialBlend = 1f;            //full 3D
         emitter.spatialize = true;            //route through Microsoft Spatializer
+        //the spatializer takes the signal at its insertion point, so the low-pass (and any other filter) must sit before it in the chain or the occlusion muffling is never heard
         emitter.spatializePostEffects = true;
         emitter.dopplerLevel = 0f;
 
@@ -443,6 +447,8 @@ public class AudioRaytracer : MonoBehaviour
         {
             src.spatialBlend = 1f;
             src.spatialize = true;
+            //filters must run before the spatializer to be audible
+            //same as the main emitter
             src.spatializePostEffects = true;
             src.minDistance = template.minDistance;
             src.maxDistance = template.maxDistance;
@@ -533,7 +539,9 @@ public class AudioRaytracer : MonoBehaviour
     //needs to be called when geometry changes during runtime
     public void RebuildCubeBuffer()
     {
-        _trackedColliders = FindObjectsOfType<BoxCollider>().Where(bc => bc.enabled).ToArray();
+        //keep the traced geometry identical to what the occlusion linecasts see
+        //no trigger volumes
+        _trackedColliders = FindObjectsOfType<BoxCollider>().Where(bc => bc.enabled && !bc.isTrigger && (_occlusionMask.value & (1 << bc.gameObject.layer)) != 0).ToArray();
 
         _cubes = _trackedColliders.Select(CubeFromCollider).ToArray();
 
@@ -579,8 +587,8 @@ public class AudioRaytracer : MonoBehaviour
         {
             BoxCollider bc = _trackedColliders[i];
 
-            //a collider was destroyed or disabled -> topology changed, do a full rescan
-            if (bc == null || !bc.enabled)
+            //a collider was destroyed, disabled or its object deactivated = topology changed so do a full rescan
+            if (bc == null || !bc.enabled || !bc.gameObject.activeInHierarchy)
             {
                 RebuildCubeBuffer();
                 return;
@@ -621,6 +629,10 @@ public class AudioRaytracer : MonoBehaviour
         Vector3 toSource = sourcePos - listenerPos;
         float dist = toSource.magnitude;
 
+        //smooth distance rolloff with no full volume plateau
+        //audibly quieter within the first few metres
+        ts.distanceRolloff = 1f / (1f + dist / Mathf.Max(_directSensitivity, 0.01f));
+
         ts.lastVisibility = ComputeVisibility(listenerPos, sourcePos, ts.probeBlocked);
 
         bool useReflEmitters = _enableReflectionEmitters && ts.reflEmitters != null;
@@ -628,8 +640,7 @@ public class AudioRaytracer : MonoBehaviour
         if (!_enableReverb && !useReflEmitters && ts.lastVisibility > _directPathThreshold)
         {
             ts.hasBend = false;
-            float directVolumeOnly = Mathf.Clamp01(_directSensitivity / (dist + 1e-3f) * ts.lastVisibility);
-            ts.targetVolume = directVolumeOnly;
+            ts.targetVolume = Mathf.Clamp01(ts.distanceRolloff * ts.lastVisibility);
             ts.targetApparentDir = (toSource.sqrMagnitude > 1e-8f) ? toSource.normalized : ts.currentApparentDir;
             ts.apparentDistance = dist;
             ts.targetCutoff = ComputeMuffleTarget(ts, listenerPos, sourcePos, 0f);
@@ -643,7 +654,7 @@ public class AudioRaytracer : MonoBehaviour
         _computeShader.SetVector("_SourcePos", sourcePos);
         _computeShader.SetBuffer(_kernelIndex, "_Directions", _directionsBuffer);
         _computeShader.SetInt("_RayCount", _rayCount);
-        _computeShader.SetInt("_MaxBounces", _maxBounces);
+        _computeShader.SetInt("_MaxBounces", Mathf.Min(_maxBounces, _pathStride - 1));
         _computeShader.SetInt("_PathStride", _pathStride);
         _computeShader.SetBuffer(_kernelIndex, "_RayVolumes", _rayVolumesBuffer);
         _computeShader.SetBuffer(_kernelIndex, "_RayPathBuffer", _rayPathBuffer);
@@ -675,6 +686,8 @@ public class AudioRaytracer : MonoBehaviour
             _rayPathBuffer.GetData(ts.rayPaths);
 #endif
 
+        //each ray can report one hit per bounce, so count rays that reached the source at all not hits
+        //or the ratio saturates and an occluded source reads as fully open
         int raysReachingSource = 0;
         for (int i = 0; i < _rayCount; i++)
             if (_raySourceHitsReadback[i] > 0) raysReachingSource++;
@@ -728,14 +741,14 @@ public class AudioRaytracer : MonoBehaviour
         float raytracedVolume = Mathf.Clamp01(Mathf.Sqrt(averageEnergy) * _receiverSensitivity);
 
         //direct and diffracted volume
-        float directVolume = Mathf.Clamp01(_directSensitivity / (dist + 1e-3f));
+        float directVolume = ts.distanceRolloff;
 
         float effectiveVisibility = ts.hasBend ? ts.lastVisibility : Mathf.Max(ts.lastVisibility, heuristicOpenness * 0.35f);
 
         //sound bending around the edge
         //attenuated by the longer path and by how deep
         //into the acoustic shadow the listener stands
-        float diffractedVolume = ts.hasBend ? Mathf.Clamp01(_directSensitivity / (bendPathLen + 1e-3f)) * detourOpenness * (1f - ts.lastVisibility) : 0f;
+        float diffractedVolume = ts.hasBend ? (1f / (1f + bendPathLen / Mathf.Max(_directSensitivity, 0.01f))) * detourOpenness * (1f - ts.lastVisibility) : 0f;
 
         float transmittedVolume = directVolume * _wallTransmission * (1f - Mathf.Max(effectiveVisibility, detourOpenness));
 
@@ -890,7 +903,8 @@ public class AudioRaytracer : MonoBehaviour
                 continue;
             }
 
-            ts.reflTargetVolume[b] = Mathf.Clamp01(Mathf.Sqrt(total / _rayCount) * _reflectionSensitivity);
+            float loudness = Mathf.Sqrt(total / _rayCount) * _reflectionSensitivity;
+            ts.reflTargetVolume[b] = (loudness / (1f + loudness)) * ts.distanceRolloff;
             ts.reflTargetDir[b] = (_bucketDir[b].sqrMagnitude > 1e-12f) ? _bucketDir[b].normalized : _reflectionDirs[b];
             ts.reflTargetDist[b] = Mathf.Max((_bucketTime[b] / total) * _speedOfSound, 0.5f);
 
@@ -900,6 +914,10 @@ public class AudioRaytracer : MonoBehaviour
             float logMin = Mathf.Log(Mathf.Max(_reflectionMinCutoff, 1f), 2f);
             float logMax = Mathf.Log(Mathf.Max(_openCutoff, 1f), 2f);
             ts.reflTargetCutoff[b] = Mathf.Pow(2f, Mathf.Lerp(logMin, logMax, hfRatio));
+
+            //an occluded source shouldnt fire reflections much brighter than its muffled dry path
+            ts.reflTargetCutoff[b] = Mathf.Min(ts.reflTargetCutoff[b],
+                Mathf.Max(ts.targetCutoff * 2f, _reflectionMinCutoff));
         }
     }
 
@@ -960,6 +978,11 @@ public class AudioRaytracer : MonoBehaviour
             ts.reverbFilter.reverbDelay = ts.currentReverbDelay;
             //a dedicated wet source must not leak the dry signal a second time
             ts.reverbFilter.dryLevel = ts.separateWet ? -10000f : 0f;
+
+            //the wet tail follows the listener so it needs the sources distance
+            //attenuation applied by hand or it never gets quieter with range
+            if (ts.wetSource != null)
+                ts.wetSource.volume = Mathf.Lerp(ts.wetSource.volume, ts.distanceRolloff, k);
         }
 
         if (_enableOcclusionMuffling && ts.lowPassFilter != null)
@@ -1013,7 +1036,6 @@ public class AudioRaytracer : MonoBehaviour
         _probeOffsets[2] = -Listener.right * _probeRadius;  //left ear
         _probeOffsets[3] = Listener.up * _probeRadius;      //top of head
         _probeOffsets[4] = -Listener.up * _probeRadius;     //chin
-
         for (int i = 0; i < _probeOffsets.Length; i++)
             _probeFroms[i] = listenerPos + _probeOffsets[i];
     }
@@ -1342,7 +1364,7 @@ public class AudioRaytracer : MonoBehaviour
         {
             float slope = (lastDb + 5f) / (lastT - t5);     //dB per second, negative
             if (slope < -1e-3f)
-                return Mathf.Clamp(-60f / slope, _reverbMaxTime, _maxDecayTime);
+                return Mathf.Clamp(-60f / slope, 0.1f, _maxDecayTime);
         }
         return _maxDecayTime;
     }

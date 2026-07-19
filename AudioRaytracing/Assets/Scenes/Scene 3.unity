@@ -7710,8 +7710,20 @@ PrefabInstance:
       value: 4
       objectReference: {fileID: 0}
     - target: {fileID: 7495396913270105892, guid: 71a297b80e87ee844999f2e29bbf067e, type: 3}
+      propertyPath: _reflectionStagger
+      value: 0.002
+      objectReference: {fileID: 0}
+    - target: {fileID: 7495396913270105892, guid: 71a297b80e87ee844999f2e29bbf067e, type: 3}
+      propertyPath: _reverbSensitivity
+      value: 3
+      objectReference: {fileID: 0}
+    - target: {fileID: 7495396913270105892, guid: 71a297b80e87ee844999f2e29bbf067e, type: 3}
       propertyPath: _reflectionMinCutoff
       value: 2000
+      objectReference: {fileID: 0}
+    - target: {fileID: 7495396913270105892, guid: 71a297b80e87ee844999f2e29bbf067e, type: 3}
+      propertyPath: _reflectionSensitivity
+      value: 4
       objectReference: {fileID: 0}
     - target: {fileID: 7495396913270105892, guid: 71a297b80e87ee844999f2e29bbf067e, type: 3}
       propertyPath: _enableReflectionEmitters
