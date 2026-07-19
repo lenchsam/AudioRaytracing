@@ -346,7 +346,7 @@ public class AudioRaytracer : MonoBehaviour
 
         emitter.spatialBlend = 1f;            //full 3D
         emitter.spatialize = true;            //route through Microsoft Spatializer
-        emitter.spatializePostEffects = false;
+        emitter.spatializePostEffects = true;
         emitter.dopplerLevel = 0f;
 
         emitter.rolloffMode = AudioRolloffMode.Custom;
@@ -443,7 +443,7 @@ public class AudioRaytracer : MonoBehaviour
         {
             src.spatialBlend = 1f;
             src.spatialize = true;
-            src.spatializePostEffects = false;
+            src.spatializePostEffects = true;
             src.minDistance = template.minDistance;
             src.maxDistance = template.maxDistance;
             src.rolloffMode = AudioRolloffMode.Custom;
@@ -675,10 +675,10 @@ public class AudioRaytracer : MonoBehaviour
             _rayPathBuffer.GetData(ts.rayPaths);
 #endif
 
-        int sourceHits = 0;
+        int raysReachingSource = 0;
         for (int i = 0; i < _rayCount; i++)
-            sourceHits += _raySourceHitsReadback[i];
-        float reflectedRatio = Mathf.Clamp01(sourceHits / (float)_rayCount);
+            if (_raySourceHitsReadback[i] > 0) raysReachingSource++;
+        float reflectedRatio = raysReachingSource / (float)_rayCount;
 
         //edge diffraction: shortest first-order path around whatever blocks the direct line
         ts.hasBend = false;
